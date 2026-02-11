@@ -27,6 +27,12 @@ Required to calculate the alignment of the trajectory with the ground truth. **R
 
 We provide some examples to process input of a monocular, monocular-inertial, stereo, stereo-inertial or RGB-D camera using ROS. Building these examples is optional. These have been tested with ROS Melodic under Ubuntu 18.04.
 
+
+## Mono-inertial-only workflow (Ubuntu 18 + monocular camera + IMU)
+
+If you only need monocular-inertial SLAM, this repository now builds in that mode by default (`BUILD_MONO_INERTIAL_ONLY=ON`).
+See `MONO_INERTIAL_GUIDE.md` for a focused EuRoC-first workflow and bring-up guidance for your own camera+IMU.
+
 # 3. Building ORB-SLAM3 library and examples
 
 Clone the repository:
