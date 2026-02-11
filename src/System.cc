@@ -23,7 +23,9 @@
 #include <thread>
 #include <pangolin/pangolin.h>
 #include <iomanip>
-#include <openssl/md5.h>
+#include <iterator>
+#include <boost/uuid/detail/md5.hpp>
+#include <boost/algorithm/hex.hpp>
 #include <boost/serialization/base_object.hpp>
 #include <boost/serialization/string.hpp>
 #include <boost/archive/text_iarchive.hpp>
@@ -1509,8 +1511,6 @@ string System::CalculateCheckSum(string filename, int type)
 {
     string checksum = "";
 
-    unsigned char c[MD5_DIGEST_LENGTH];
-
     std::ios_base::openmode flags = std::ios::in;
     if(type == BINARY_FILE) // Binary file
         flags = std::ios::in | std::ios::binary;
@@ -1522,25 +1522,24 @@ string System::CalculateCheckSum(string filename, int type)
         return checksum;
     }
 
-    MD5_CTX md5Context;
+    boost::uuids::detail::md5 hash;
     char buffer[1024];
 
-    MD5_Init (&md5Context);
-    while ( int count = f.readsome(buffer, sizeof(buffer)))
+    while (f.good())
     {
-        MD5_Update(&md5Context, buffer, count);
+        f.read(buffer, sizeof(buffer));
+        const std::streamsize count = f.gcount();
+        if(count > 0)
+            hash.process_bytes(buffer, static_cast<std::size_t>(count));
     }
 
     f.close();
 
-    MD5_Final(c, &md5Context );
+    boost::uuids::detail::md5::digest_type digest;
+    hash.get_digest(digest);
 
-    for(int i = 0; i < MD5_DIGEST_LENGTH; i++)
-    {
-        char aux[10];
-        sprintf(aux,"%02x", c[i]);
-        checksum = checksum + aux;
-    }
+    const auto* digestBytes = reinterpret_cast<const unsigned char*>(&digest);
+    boost::algorithm::hex_lower(digestBytes, digestBytes + sizeof(digest), std::back_inserter(checksum));
 
     return checksum;
 }
