@@ -1306,7 +1306,7 @@ bool Tracking::ParseORBParamFile(cv::FileStorage &fSettings)
     }
     catch(const std::runtime_error&)
     {
-        std::cerr << "*ORBextractor.descriptor must be ORB, BEBLID or TEBLID*" << std::endl;
+        std::cerr << "*ORBextractor.descriptor must be ORB, BEBLID, TEBLID, AKAZE or LATCH*" << std::endl;
         b_miss_params = true;
     }
 

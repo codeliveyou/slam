@@ -49,7 +49,9 @@ public:
     {
         ORB = 0,
         BEBLID = 1,
-        TEBLID = 2
+        TEBLID = 2,
+        AKAZE = 3,
+        LATCH = 4
     };
     
     enum {HARRIS_SCORE=0, FAST_SCORE=1 };
