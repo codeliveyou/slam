@@ -1140,6 +1140,18 @@ namespace ORB_SLAM3
         if(descriptorType == ORBextractor::DescriptorType::AKAZE)
         {
             descriptor = cv::AKAZE::create(cv::AKAZE::DESCRIPTOR_MLDB);
+
+            // OpenCV AKAZE descriptor computation requires keypoints with valid class_id values
+            // (assigned during AKAZE detection). Our pipeline keeps ORB-style keypoint detection,
+            // so class_id is unset (-1) and AKAZE::compute asserts. Assign a valid base evolution
+            // level to keep compatibility with externally-provided keypoints.
+            vector<KeyPoint> akazeKeypoints = keypoints;
+            for(KeyPoint &kp : akazeKeypoints)
+            {
+                if(kp.class_id < 0)
+                    kp.class_id = 0;
+            }
+            descriptor->compute(image, akazeKeypoints, descriptors);
         }
         else
         {
@@ -1153,9 +1165,8 @@ namespace ORB_SLAM3
 #else
             throw std::runtime_error("OpenCV xfeatures2d module not available. Build OpenCV with contrib to use BEBLID/TEBLID/LATCH.");
 #endif
+            descriptor->compute(image, keypoints, descriptors);
         }
-
-        descriptor->compute(image, keypoints, descriptors);
 
         if(!descriptors.empty() && descriptors.cols != 32)
             throw std::runtime_error("Only 256-bit binary descriptors are supported. Check descriptor configuration.");
