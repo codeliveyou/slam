@@ -1130,11 +1130,14 @@ namespace ORB_SLAM3
 #if ORB_SLAM3_HAS_XFEATURES2D
         cv::Ptr<cv::Feature2D> descriptor;
         if(descriptorType == ORBextractor::DescriptorType::BEBLID)
-            descriptor = cv::xfeatures2d::BEBLID::create(descriptorScaleFactor);
+            descriptor = cv::xfeatures2d::BEBLID::create(descriptorScaleFactor, cv::xfeatures2d::BEBLID::SIZE_256_BITS);
         else
             descriptor = cv::xfeatures2d::TEBLID::create(descriptorScaleFactor);
 
         descriptor->compute(image, keypoints, descriptors);
+
+        if(!descriptors.empty() && descriptors.cols != 32)
+            throw std::runtime_error("Only 256-bit binary descriptors are supported. Check descriptor configuration.");
 #else
         throw std::runtime_error("OpenCV xfeatures2d module not available. Build OpenCV with contrib to use BEBLID/TEBLID.");
 #endif
