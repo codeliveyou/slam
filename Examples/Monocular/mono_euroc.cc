@@ -54,10 +54,11 @@ int main(int argc, char **argv)
     vector< vector<double> > vTimestampsCam;
     vector<int> nImages;
 
+    
     vstrImageFilenames.resize(num_seq);
     vTimestampsCam.resize(num_seq);
     nImages.resize(num_seq);
-
+    
     int tot_images = 0;
     for (seq = 0; seq<num_seq; seq++)
     {
@@ -80,7 +81,7 @@ int main(int argc, char **argv)
     int fps = 20;
     float dT = 1.f/fps;
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
-    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::MONOCULAR, false);
+    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::MONOCULAR, true);
     float imageScale = SLAM.GetImageScale();
 
     double t_resize = 0.f;
@@ -94,76 +95,77 @@ int main(int argc, char **argv)
         int proccIm = 0;
         for(int ni=0; ni<nImages[seq]; ni++, proccIm++)
         {
-
+            cout << "Image path: " << vstrImageFilenames[seq][ni] << endl;
             // Read image from file
             im = cv::imread(vstrImageFilenames[seq][ni],cv::IMREAD_UNCHANGED); //,CV_LOAD_IMAGE_UNCHANGED);
+            // cv::imshow("img", im);
             double tframe = vTimestampsCam[seq][ni];
-
+            
             if(im.empty())
             {
                 cerr << endl << "Failed to load image at: "
-                     <<  vstrImageFilenames[seq][ni] << endl;
+                <<  vstrImageFilenames[seq][ni] << endl;
                 return 1;
             }
-
+            
             if(imageScale != 1.f)
             {
-#ifdef REGISTER_TIMES
-    #ifdef COMPILEDWITHC11
+                #ifdef REGISTER_TIMES
+                #ifdef COMPILEDWITHC11
                 std::chrono::steady_clock::time_point t_Start_Resize = std::chrono::steady_clock::now();
-    #else
+                #else
                 std::chrono::monotonic_clock::time_point t_Start_Resize = std::chrono::monotonic_clock::now();
-    #endif
-#endif
+                #endif
+                #endif
                 int width = im.cols * imageScale;
                 int height = im.rows * imageScale;
                 cv::resize(im, im, cv::Size(width, height));
-#ifdef REGISTER_TIMES
-    #ifdef COMPILEDWITHC11
+                #ifdef REGISTER_TIMES
+                #ifdef COMPILEDWITHC11
                 std::chrono::steady_clock::time_point t_End_Resize = std::chrono::steady_clock::now();
-    #else
+                #else
                 std::chrono::monotonic_clock::time_point t_End_Resize = std::chrono::monotonic_clock::now();
-    #endif
+                #endif
                 t_resize = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(t_End_Resize - t_Start_Resize).count();
                 SLAM.InsertResizeTime(t_resize);
-#endif
+                #endif
             }
-
-    #ifdef COMPILEDWITHC11
+            
+            #ifdef COMPILEDWITHC11
             std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
-    #else
+            #else
             std::chrono::monotonic_clock::time_point t1 = std::chrono::monotonic_clock::now();
-    #endif
-
+            #endif
+            
             // Pass the image to the SLAM system
             // cout << "tframe = " << tframe << endl;
             SLAM.TrackMonocular(im,tframe); // TODO change to monocular_inertial
-
-    #ifdef COMPILEDWITHC11
+            
+            #ifdef COMPILEDWITHC11
             std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
-    #else
+            #else
             std::chrono::monotonic_clock::time_point t2 = std::chrono::monotonic_clock::now();
-    #endif
-
-#ifdef REGISTER_TIMES
+            #endif
+            
+            #ifdef REGISTER_TIMES
             t_track = t_resize + std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(t2 - t1).count();
             SLAM.InsertTrackTime(t_track);
-#endif
-
+            #endif
+            
             double ttrack= std::chrono::duration_cast<std::chrono::duration<double> >(t2 - t1).count();
-
+            
             vTimesTrack[ni]=ttrack;
-
+            
             // Wait to load the next frame
             double T=0;
             if(ni<nImages[seq]-1)
-                T = vTimestampsCam[seq][ni+1]-tframe;
+            T = vTimestampsCam[seq][ni+1]-tframe;
             else if(ni>0)
-                T = tframe-vTimestampsCam[seq][ni-1];
-
+            T = tframe-vTimestampsCam[seq][ni-1];
+            
             //std::cout << "T: " << T << std::endl;
             //std::cout << "ttrack: " << ttrack << std::endl;
-
+            
             if(ttrack<T) {
                 //std::cout << "usleep: " << (dT-ttrack) << std::endl;
                 usleep((T-ttrack)*1e6); // 1e6
@@ -176,16 +178,17 @@ int main(int argc, char **argv)
             string f_file_submap =  "./SubMaps/f_SubMap_" + std::to_string(seq) + ".txt";
             SLAM.SaveTrajectoryEuRoC(f_file_submap);
             SLAM.SaveKeyFrameTrajectoryEuRoC(kf_file_submap);
-
+            
             cout << "Changing the dataset" << endl;
-
+            
             SLAM.ChangeDataset();
         }
-
     }
+    // cv::waitKey(1);
+    // cv::destroyAllWindows();
     // Stop all threads
     SLAM.Shutdown();
-
+    
     // Save camera trajectory
     if (bFileName)
     {
@@ -206,6 +209,7 @@ int main(int argc, char **argv)
 void LoadImages(const string &strImagePath, const string &strPathTimes,
                 vector<string> &vstrImages, vector<double> &vTimeStamps)
 {
+    cout << "Image Path: " << strImagePath << endl;
     ifstream fTimes;
     fTimes.open(strPathTimes.c_str());
     vTimeStamps.reserve(5000);
