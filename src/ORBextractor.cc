@@ -1165,7 +1165,6 @@ namespace ORB_SLAM3
 #else
             throw std::runtime_error("OpenCV xfeatures2d module not available. Build OpenCV with contrib to use BEBLID/TEBLID/LATCH.");
 #endif
-
             descriptor->compute(image, keypoints, descriptors);
         }
 
