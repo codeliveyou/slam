@@ -1,15 +1,27 @@
-# ORB-SLAM3
+# SLAM (ORB-SLAM3 based)
 
 ### V1.0, December 22th, 2021
 **Authors:** Carlos Campos, Richard Elvira, Juan J. Gómez Rodríguez, [José M. M. Montiel](http://webdiis.unizar.es/~josemari/), [Juan D. Tardos](http://webdiis.unizar.es/~jdtardos/).
 
 The [Changelog](https://github.com/UZ-SLAMLab/ORB_SLAM3/blob/master/Changelog.md) describes the features of each version.
 
-ORB-SLAM3 is the first real-time SLAM library able to perform **Visual, Visual-Inertial and Multi-Map SLAM** with **monocular, stereo and RGB-D** cameras, using **pin-hole and fisheye** lens models. In all sensor configurations, ORB-SLAM3 is as robust as the best systems available in the literature, and significantly more accurate. 
+This project starts from [ORB-SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3) and keeps the original SLAM pipeline for **Visual, Visual-Inertial and Multi-Map SLAM** with **monocular, stereo and RGB-D** cameras (pin-hole and fisheye lens models).
+
+In addition, this fork extends the feature-descriptor options in the extractor/matcher pipeline to improve robustness when image quality degrades (for example, camera blur or strong motion blur) while preserving the original ORB path.
+
+Supported binary descriptors in this repository:
+
+- `ORB` (original ORB-SLAM3 behavior)
+- `BEBLID` (PCR Group)
+- `TEBLID` (PCR Group)
+- `AKAZE` (OpenCV core implementation)
+- `LATCH` (alternative robust binary descriptor)
+
+All options are constrained to 256-bit binary descriptors so they remain compatible with the existing BoW/matching flow.
 
 We provide examples to run ORB-SLAM3 in the [EuRoC dataset](http://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets) using stereo or monocular, with or without IMU, and in the [TUM-VI dataset](https://vision.in.tum.de/data/datasets/visual-inertial-dataset) using fisheye stereo or monocular, with or without IMU. Videos of some example executions can be found at [ORB-SLAM3 channel](https://www.youtube.com/channel/UCXVt-kXG6T95Z4tVaYlU80Q).
 
-This software is based on [ORB-SLAM2](https://github.com/raulmur/ORB_SLAM2) developed by [Raul Mur-Artal](http://webdiis.unizar.es/~raulmur/), [Juan D. Tardos](http://webdiis.unizar.es/~jdtardos/), [J. M. M. Montiel](http://webdiis.unizar.es/~josemari/) and [Dorian Galvez-Lopez](http://doriangalvez.com/) ([DBoW2](https://github.com/dorian3d/DBoW2)).
+This software is based on [ORB-SLAM2](https://github.com/raulmur/ORB_SLAM2) developed by [Raul Mur-Artal](http://webdiis.unizar.es/~raulmur/), [Juan D. Tardos](http://webdiis.unizar.es/~jdtardos/), [J. M. M. Montiel](http://webdiis.unizar.es/~josemari/) and [Dorian Galvez-Lopez](http://doriangalvez.com/) ([DBoW2](https://github.com/dorian3d/DBoW2)). This repository then evolves [ORB-SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3) with additional descriptor options and codebase cleanup.
 
 <a href="https://youtu.be/HyLNq-98LRo" target="_blank"><img src="https://img.youtube.com/vi/HyLNq-98LRo/0.jpg" 
 alt="ORB-SLAM3" width="240" height="180" border="10" /></a>
@@ -62,6 +74,8 @@ We use [Pangolin](https://github.com/stevenlovegrove/Pangolin) for visualization
 ## OpenCV
 We use [OpenCV](http://opencv.org) to manipulate images and features. Dowload and install instructions can be found at: http://opencv.org. **Required at leat 3.0. Tested with OpenCV 3.2.0 and 4.4.0**.
 
+For descriptor options `BEBLID`, `TEBLID`, and `LATCH`, OpenCV must be built with the `xfeatures2d` module from opencv_contrib. `ORB` and `AKAZE` work with core OpenCV builds.
+
 ## Eigen3
 Required by g2o (see below). Download and install instructions can be found at: http://eigen.tuxfamily.org. **Required at least 3.1.0**.
 
@@ -110,6 +124,19 @@ Directory `Examples` contains several demo programs and calibration files to run
 ```
 ./Examples/Stereo-Inertial/stereo_inertial_realsense_D435i Vocabulary/ORBvoc.txt ./Examples/Stereo-Inertial/RealSense_D435i.yaml
 ```
+
+# 4.1 Descriptor configuration
+This fork keeps ORB as default, and adds selectable binary descriptor backends in settings files:
+
+```
+ORBextractor.descriptor: ORB        # ORB | BEBLID | TEBLID | AKAZE | LATCH
+ORBextractor.descriptorScaleFactor: 1.0
+```
+
+Notes:
+- Use `ORB` for original ORB-SLAM3 behavior and compatibility.
+- `BEBLID` / `TEBLID` / `LATCH` require OpenCV contrib (`xfeatures2d`).
+- `AKAZE` uses OpenCV core and is constrained to 256-bit MLDB descriptors to stay binary/BoW-compatible.
 
 # 5. EuRoC Examples
 [EuRoC dataset](http://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets) was recorded with two pinhole cameras and an inertial sensor. We provide an example script to launch EuRoC sequences in all the sensor configurations.
