@@ -1139,7 +1139,10 @@ namespace ORB_SLAM3
 
         if(descriptorType == ORBextractor::DescriptorType::AKAZE)
         {
-            descriptor = cv::AKAZE::create(cv::AKAZE::DESCRIPTOR_MLDB);
+            // Force the OpenCV AKAZE backend to output 256-bit (32-byte) binary descriptors
+            // so they stay compatible with ORB-SLAM's BoW and Hamming-distance pipeline.
+            descriptor = cv::AKAZE::create(cv::AKAZE::DESCRIPTOR_MLDB, 256, 3, 0.001f, 4, 4,
+                                           cv::KAZE::DIFF_PM_G2);
 
             // OpenCV AKAZE descriptor computation requires keypoints with valid class_id values
             // (assigned during AKAZE detection). Our pipeline keeps ORB-style keypoint detection,
