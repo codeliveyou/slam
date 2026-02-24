@@ -488,6 +488,10 @@ namespace ORB_SLAM3
             return DescriptorType::BEBLID;
         if(descriptorTypeName == "TEBLID")
             return DescriptorType::TEBLID;
+        if(descriptorTypeName == "AKAZE")
+            return DescriptorType::AKAZE;
+        if(descriptorTypeName == "LATCH")
+            return DescriptorType::LATCH;
 
         throw std::runtime_error("Unknown descriptor type: " + descriptorTypeName);
     }
@@ -502,6 +506,10 @@ namespace ORB_SLAM3
                 return "BEBLID";
             case DescriptorType::TEBLID:
                 return "TEBLID";
+            case DescriptorType::AKAZE:
+                return "AKAZE";
+            case DescriptorType::LATCH:
+                return "LATCH";
             default:
                 return "UNKNOWN";
         }
@@ -1127,20 +1135,30 @@ namespace ORB_SLAM3
             return;
         }
 
-#if ORB_SLAM3_HAS_XFEATURES2D
         cv::Ptr<cv::Feature2D> descriptor;
-        if(descriptorType == ORBextractor::DescriptorType::BEBLID)
-            descriptor = cv::xfeatures2d::BEBLID::create(descriptorScaleFactor, cv::xfeatures2d::BEBLID::SIZE_256_BITS);
+
+        if(descriptorType == ORBextractor::DescriptorType::AKAZE)
+        {
+            descriptor = cv::AKAZE::create(cv::AKAZE::DESCRIPTOR_MLDB);
+        }
         else
-            descriptor = cv::xfeatures2d::TEBLID::create(descriptorScaleFactor);
+        {
+#if ORB_SLAM3_HAS_XFEATURES2D
+            if(descriptorType == ORBextractor::DescriptorType::BEBLID)
+                descriptor = cv::xfeatures2d::BEBLID::create(descriptorScaleFactor, cv::xfeatures2d::BEBLID::SIZE_256_BITS);
+            else if(descriptorType == ORBextractor::DescriptorType::TEBLID)
+                descriptor = cv::xfeatures2d::TEBLID::create(descriptorScaleFactor);
+            else
+                descriptor = cv::xfeatures2d::LATCH::create(32, true, 3, descriptorScaleFactor);
+#else
+            throw std::runtime_error("OpenCV xfeatures2d module not available. Build OpenCV with contrib to use BEBLID/TEBLID/LATCH.");
+#endif
+        }
 
         descriptor->compute(image, keypoints, descriptors);
 
         if(!descriptors.empty() && descriptors.cols != 32)
             throw std::runtime_error("Only 256-bit binary descriptors are supported. Check descriptor configuration.");
-#else
-        throw std::runtime_error("OpenCV xfeatures2d module not available. Build OpenCV with contrib to use BEBLID/TEBLID.");
-#endif
     }
 
     int ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPoint>& _keypoints,
