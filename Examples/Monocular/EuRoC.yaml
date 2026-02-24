@@ -62,10 +62,10 @@ ORBextractor.nLevels: 8
 ORBextractor.iniThFAST: 20
 ORBextractor.minThFAST: 7
 
-# Descriptor backend: ORB (default), BEBLID, or TEBLID
+# Descriptor backend: ORB (default), BEBLID, TEBLID, AKAZE, or LATCH
 ORBextractor.descriptor: ORB
 
-# Scale factor for BEBLID/TEBLID descriptor generation (default 1.0)
+# Scale factor for BEBLID/TEBLID/LATCH descriptor generation (default 1.0)
 ORBextractor.descriptorScaleFactor: 1.0
 
 #--------------------------------------------------------------------------------------------
