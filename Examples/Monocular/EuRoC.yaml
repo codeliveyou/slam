@@ -62,6 +62,12 @@ ORBextractor.nLevels: 8
 ORBextractor.iniThFAST: 20
 ORBextractor.minThFAST: 7
 
+# Descriptor backend: ORB (default), BEBLID, or TEBLID
+ORBextractor.descriptor: ORB
+
+# Scale factor for BEBLID/TEBLID descriptor generation (default 1.0)
+ORBextractor.descriptorScaleFactor: 1.0
+
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters
 #---------------------------------------------------------------------------------------------
@@ -75,4 +81,3 @@ Viewer.ViewpointX: 0.0
 Viewer.ViewpointY: -0.7
 Viewer.ViewpointZ: -1.8
 Viewer.ViewpointF: 500.0
-

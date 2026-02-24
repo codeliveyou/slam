@@ -21,6 +21,7 @@
 
 #include <vector>
 #include <list>
+#include <string>
 #include <opencv2/opencv.hpp>
 
 
@@ -43,11 +44,20 @@ public:
 class ORBextractor
 {
 public:
+
+    enum class DescriptorType
+    {
+        ORB = 0,
+        BEBLID = 1,
+        TEBLID = 2
+    };
     
     enum {HARRIS_SCORE=0, FAST_SCORE=1 };
 
     ORBextractor(int nfeatures, float scaleFactor, int nlevels,
-                 int iniThFAST, int minThFAST);
+                 int iniThFAST, int minThFAST,
+                 DescriptorType descriptorType = DescriptorType::ORB,
+                 float descriptorScaleFactor = 1.0f);
 
     ~ORBextractor(){}
 
@@ -80,6 +90,9 @@ public:
         return mvInvLevelSigma2;
     }
 
+    static DescriptorType DescriptorTypeFromString(const std::string& descriptorTypeName);
+    static std::string DescriptorTypeToString(DescriptorType descriptorType);
+
     std::vector<cv::Mat> mvImagePyramid;
 
 protected:
@@ -97,6 +110,8 @@ protected:
     int nlevels;
     int iniThFAST;
     int minThFAST;
+    DescriptorType mDescriptorType;
+    float mDescriptorScaleFactor;
 
     std::vector<int> mnFeaturesPerLevel;
 
@@ -111,4 +126,3 @@ protected:
 } //namespace ORB_SLAM
 
 #endif
-

@@ -260,6 +260,8 @@ protected:
     //ORB
     ORBextractor* mpORBextractorLeft, *mpORBextractorRight;
     ORBextractor* mpIniORBextractor;
+    ORBextractor::DescriptorType mDescriptorType;
+    float mDescriptorScaleFactor;
 
     //BoW
     ORBVocabulary* mpORBVocabulary;

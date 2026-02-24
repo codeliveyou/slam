@@ -31,6 +31,9 @@
 
 #include <iostream>
 
+#include <algorithm>
+#include <cctype>
+
 #include <mutex>
 #include <chrono>
 
@@ -591,14 +594,20 @@ void Tracking::newParameterLoader(Settings *settings) {
     int fIniThFAST = settings->initThFAST();
     int fMinThFAST = settings->minThFAST();
     float fScaleFactor = settings->scaleFactor();
+    mDescriptorScaleFactor = settings->descriptorScaleFactor();
 
-    mpORBextractorLeft = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+    std::string descriptorTypeString = settings->descriptorType();
+    std::transform(descriptorTypeString.begin(), descriptorTypeString.end(), descriptorTypeString.begin(),
+                   [](unsigned char c){ return std::toupper(c); });
+    mDescriptorType = ORBextractor::DescriptorTypeFromString(descriptorTypeString);
+
+    mpORBextractorLeft = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST,mDescriptorType,mDescriptorScaleFactor);
 
     if(mSensor==System::STEREO || mSensor==System::IMU_STEREO)
-        mpORBextractorRight = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+        mpORBextractorRight = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST,mDescriptorType,mDescriptorScaleFactor);
 
     if(mSensor==System::MONOCULAR || mSensor==System::IMU_MONOCULAR)
-        mpIniORBextractor = new ORBextractor(5*nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+        mpIniORBextractor = new ORBextractor(5*nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST,mDescriptorType,mDescriptorScaleFactor);
 
     //IMU parameters
     Sophus::SE3f Tbc = settings->Tbc();
@@ -1219,6 +1228,8 @@ bool Tracking::ParseORBParamFile(cv::FileStorage &fSettings)
     bool b_miss_params = false;
     int nFeatures, nLevels, fIniThFAST, fMinThFAST;
     float fScaleFactor;
+    std::string descriptorTypeString = "ORB";
+    mDescriptorScaleFactor = 1.0f;
 
     cv::FileNode node = fSettings["ORBextractor.nFeatures"];
     if(!node.empty() && node.isInt())
@@ -1275,18 +1286,42 @@ bool Tracking::ParseORBParamFile(cv::FileStorage &fSettings)
         b_miss_params = true;
     }
 
+    node = fSettings["ORBextractor.descriptor"];
+    if(!node.empty() && node.isString())
+    {
+        descriptorTypeString = (std::string) node;
+    }
+
+    node = fSettings["ORBextractor.descriptorScaleFactor"];
+    if(!node.empty() && node.isReal())
+    {
+        mDescriptorScaleFactor = node.real();
+    }
+
+    std::transform(descriptorTypeString.begin(), descriptorTypeString.end(), descriptorTypeString.begin(),
+                   [](unsigned char c){ return std::toupper(c); });
+    try
+    {
+        mDescriptorType = ORBextractor::DescriptorTypeFromString(descriptorTypeString);
+    }
+    catch(const std::runtime_error&)
+    {
+        std::cerr << "*ORBextractor.descriptor must be ORB, BEBLID or TEBLID*" << std::endl;
+        b_miss_params = true;
+    }
+
     if(b_miss_params)
     {
         return false;
     }
 
-    mpORBextractorLeft = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+    mpORBextractorLeft = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST,mDescriptorType,mDescriptorScaleFactor);
 
     if(mSensor==System::STEREO || mSensor==System::IMU_STEREO)
-        mpORBextractorRight = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+        mpORBextractorRight = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST,mDescriptorType,mDescriptorScaleFactor);
 
     if(mSensor==System::MONOCULAR || mSensor==System::IMU_MONOCULAR)
-        mpIniORBextractor = new ORBextractor(5*nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+        mpIniORBextractor = new ORBextractor(5*nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST,mDescriptorType,mDescriptorScaleFactor);
 
     cout << endl << "ORB Extractor Parameters: " << endl;
     cout << "- Number of Features: " << nFeatures << endl;
@@ -1294,6 +1329,8 @@ bool Tracking::ParseORBParamFile(cv::FileStorage &fSettings)
     cout << "- Scale Factor: " << fScaleFactor << endl;
     cout << "- Initial Fast Threshold: " << fIniThFAST << endl;
     cout << "- Minimum Fast Threshold: " << fMinThFAST << endl;
+    cout << "- Descriptor Type: " << ORBextractor::DescriptorTypeToString(mDescriptorType) << endl;
+    cout << "- Descriptor Scale Factor: " << mDescriptorScaleFactor << endl;
 
     return true;
 }

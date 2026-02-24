@@ -56,8 +56,16 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/features2d/features2d.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
+
+#if __has_include(<opencv2/xfeatures2d.hpp>)
+#include <opencv2/xfeatures2d.hpp>
+#define ORB_SLAM3_HAS_XFEATURES2D 1
+#else
+#define ORB_SLAM3_HAS_XFEATURES2D 0
+#endif
 #include <vector>
 #include <iostream>
+#include <stdexcept>
 
 #include "ORBextractor.h"
 
@@ -407,9 +415,13 @@ namespace ORB_SLAM3
             };
 
     ORBextractor::ORBextractor(int _nfeatures, float _scaleFactor, int _nlevels,
-                               int _iniThFAST, int _minThFAST):
+                               int _iniThFAST, int _minThFAST,
+                               DescriptorType descriptorType,
+                               float descriptorScaleFactor):
             nfeatures(_nfeatures), scaleFactor(_scaleFactor), nlevels(_nlevels),
-            iniThFAST(_iniThFAST), minThFAST(_minThFAST)
+            iniThFAST(_iniThFAST), minThFAST(_minThFAST),
+            mDescriptorType(descriptorType),
+            mDescriptorScaleFactor(descriptorScaleFactor)
     {
         mvScaleFactor.resize(nlevels);
         mvLevelSigma2.resize(nlevels);
@@ -465,6 +477,33 @@ namespace ORB_SLAM3
                 ++v0;
             umax[v] = v0;
             ++v0;
+        }
+    }
+
+    ORBextractor::DescriptorType ORBextractor::DescriptorTypeFromString(const std::string& descriptorTypeName)
+    {
+        if(descriptorTypeName == "ORB")
+            return DescriptorType::ORB;
+        if(descriptorTypeName == "BEBLID")
+            return DescriptorType::BEBLID;
+        if(descriptorTypeName == "TEBLID")
+            return DescriptorType::TEBLID;
+
+        throw std::runtime_error("Unknown descriptor type: " + descriptorTypeName);
+    }
+
+    std::string ORBextractor::DescriptorTypeToString(ORBextractor::DescriptorType descriptorType)
+    {
+        switch(descriptorType)
+        {
+            case DescriptorType::ORB:
+                return "ORB";
+            case DescriptorType::BEBLID:
+                return "BEBLID";
+            case DescriptorType::TEBLID:
+                return "TEBLID";
+            default:
+                return "UNKNOWN";
         }
     }
 
@@ -1075,12 +1114,30 @@ namespace ORB_SLAM3
     }
 
     static void computeDescriptors(const Mat& image, vector<KeyPoint>& keypoints, Mat& descriptors,
-                                   const vector<Point>& pattern)
+                                   const vector<Point>& pattern,
+                                   ORBextractor::DescriptorType descriptorType,
+                                   float descriptorScaleFactor)
     {
-        descriptors = Mat::zeros((int)keypoints.size(), 32, CV_8UC1);
+        if(descriptorType == ORBextractor::DescriptorType::ORB)
+        {
+            descriptors = Mat::zeros((int)keypoints.size(), 32, CV_8UC1);
 
-        for (size_t i = 0; i < keypoints.size(); i++)
-            computeOrbDescriptor(keypoints[i], image, &pattern[0], descriptors.ptr((int)i));
+            for (size_t i = 0; i < keypoints.size(); i++)
+                computeOrbDescriptor(keypoints[i], image, &pattern[0], descriptors.ptr((int)i));
+            return;
+        }
+
+#if ORB_SLAM3_HAS_XFEATURES2D
+        cv::Ptr<cv::Feature2D> descriptor;
+        if(descriptorType == ORBextractor::DescriptorType::BEBLID)
+            descriptor = cv::xfeatures2d::BEBLID::create(descriptorScaleFactor);
+        else
+            descriptor = cv::xfeatures2d::TEBLID::create(descriptorScaleFactor);
+
+        descriptor->compute(image, keypoints, descriptors);
+#else
+        throw std::runtime_error("OpenCV xfeatures2d module not available. Build OpenCV with contrib to use BEBLID/TEBLID.");
+#endif
     }
 
     int ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPoint>& _keypoints,
@@ -1135,7 +1192,7 @@ namespace ORB_SLAM3
             // Compute the descriptors
             //Mat desc = descriptors.rowRange(offset, offset + nkeypointsLevel);
             Mat desc = cv::Mat(nkeypointsLevel, 32, CV_8U);
-            computeDescriptors(workingMat, keypoints, desc, pattern);
+            computeDescriptors(workingMat, keypoints, desc, pattern, mDescriptorType, mDescriptorScaleFactor);
 
             offset += nkeypointsLevel;
 
