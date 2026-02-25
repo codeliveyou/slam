@@ -147,8 +147,11 @@ For **monocular-inertial** (and stereo-inertial / RGB-D-inertial), the pipeline 
 
 **Position and velocity on screen:** The current frame window shows in the top-left corner (in SLAM world coordinates):
 - **Pos:** position (x, y, z)
-- **Vel(SLAM):** velocity from visual/visual-inertial tracking and optimization (shown for both monocular and monocular-inertial when available)
-- **Vel(IMU):** inertial-only predicted velocity (shown only for monocular-inertial when IMU prediction was used)
+- **Vel(SLAM):** velocity from the **reference keyframe** (BA-optimized) when available; otherwise the current frame. This is the fused visual-inertial estimate.
+- **Vel(IMU):** inertial-only predicted velocity (no vision), shown only for monocular-inertial when IMU prediction was used. Vel(SLAM) and Vel(IMU) differ because SLAM is corrected by vision/BA.
+
+**Console:** Every 30 viewer frames, the body (inertial) or camera frame axes expressed in the SLAM (world) coordinate system are printed:
+- `[SLAM] Body frame axes in world (x,y,z):` with X, Y, Z row vectors (or `Camera frame` for pure monocular).
 
 **Velocity export:** In the Viewer menu, use **"Save Vel"** to write trajectory files including velocity. Console output confirms the save and pose count.
 - Frame file: `CameraTrajectoryWithVelocity.txt` — format `timestamp tx ty tz qx qy qz qw vx_slam vy_slam vz_slam vx_imu vy_imu vz_imu` (IMU columns are NaN for monocular).

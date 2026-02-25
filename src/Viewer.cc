@@ -18,6 +18,7 @@
 
 
 #include "Viewer.h"
+#include "KeyFrame.h"
 #include <pangolin/pangolin.h>
 
 #include <mutex>
@@ -221,6 +222,10 @@ void Viewer::Run()
 
     float trackedImageScale = mpTracker->GetImageScale();
 
+    // Console print: body/camera axes in SLAM (world) frame, every N viewer frames
+    static int s_viewerFrameCount = 0;
+    const int kAxesPrintInterval = 30;
+
     cout << "Starting the Viewer" << endl;
     while(1)
     {
@@ -338,7 +343,7 @@ void Viewer::Run()
             cv::resize(toShow, toShow, cv::Size(width, height));
         }
 
-        // On-screen position and velocity (SLAM coords). Monocular: pos + SLAM vel; Monocular-inertial: + IMU vel.
+        // On-screen position and velocity (SLAM coords). Vel(SLAM)=optimized from ref KF; Vel(IMU)=inertial-only prediction.
         if (!toShow.empty() && mpTracker->mCurrentFrame.HasPose())
         {
             Eigen::Vector3f pos = mpTracker->mCurrentFrame.GetCameraCenter();
@@ -348,7 +353,16 @@ void Viewer::Run()
             int y = 22, dy = 22;
             cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
             y += dy;
-            if (mpTracker->mCurrentFrame.HasVelocity())
+            // Vel(SLAM): from reference keyframe (BA-optimized) when available; else current frame
+            KeyFrame* pRefKF = mpTracker->mCurrentFrame.mpReferenceKF;
+            if (pRefKF && !pRefKF->isBad())
+            {
+                Eigen::Vector3f v = pRefKF->GetVelocity();
+                ss.str(""); ss << "Vel(SLAM): " << v(0) << " " << v(1) << " " << v(2);
+                cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+                y += dy;
+            }
+            else if (mpTracker->mCurrentFrame.HasVelocity())
             {
                 Eigen::Vector3f v = mpTracker->mCurrentFrame.GetVelocity();
                 ss.str(""); ss << "Vel(SLAM): " << v(0) << " " << v(1) << " " << v(2);
@@ -361,6 +375,21 @@ void Viewer::Run()
                 ss.str(""); ss << "Vel(IMU): " << vimu(0) << " " << vimu(1) << " " << vimu(2);
                 cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 200, 0), 1, cv::LINE_AA);
             }
+        }
+
+        // Console: body/camera frame axes expressed in SLAM (world) coordinates, every kAxesPrintInterval frames
+        if (mpTracker->mCurrentFrame.HasPose() && (++s_viewerFrameCount % kAxesPrintInterval == 0))
+        {
+            Eigen::Matrix3f R; // rotation from body/camera to world (columns = axes in world)
+            bool isBody = (mpTracker->mSensor == System::IMU_MONOCULAR || mpTracker->mSensor == System::IMU_STEREO || mpTracker->mSensor == System::IMU_RGBD);
+            if (isBody)
+                R = mpTracker->mCurrentFrame.GetImuRotation();
+            else
+                R = mpTracker->mCurrentFrame.GetRwc();
+            std::cout << "[SLAM] " << (isBody ? "Body" : "Camera") << " frame axes in world (x,y,z):" << std::endl;
+            std::cout << "  X: " << R(0,0) << " " << R(1,0) << " " << R(2,0) << std::endl;
+            std::cout << "  Y: " << R(0,1) << " " << R(1,1) << " " << R(2,1) << std::endl;
+            std::cout << "  Z: " << R(0,2) << " " << R(1,2) << " " << R(2,2) << std::endl;
         }
 
         cv::imshow("ORB-SLAM3: Current Frame",toShow);
