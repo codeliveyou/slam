@@ -174,13 +174,12 @@ void Preintegrated::Reintegrate()
         IntegrateNewMeasurement(aux[i].a,aux[i].w,aux[i].t);
 }
 
+// Integrate one IMU sample: update delta rotation (dR), delta velocity (dV), delta position (dP) and Jacobians for bias.
 void Preintegrated::IntegrateNewMeasurement(const Eigen::Vector3f &acceleration, const Eigen::Vector3f &angVel, const float &dt)
 {
     mvMeasurements.push_back(integrable(acceleration,angVel,dt));
 
-    // Position is updated firstly, as it depends on previously computed velocity and rotation.
-    // Velocity is updated secondly, as it depends on previously computed rotation.
-    // Rotation is the last to be updated.
+    // Order: position depends on velocity and rotation; velocity depends on rotation; rotation from gyro.
 
     //Matrices to compute covariance
     Eigen::Matrix<float,9,9> A;

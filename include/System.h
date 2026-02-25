@@ -105,18 +105,13 @@ public:
     System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor, const bool bUseViewer = true, const int initFr = 0, const string &strSequence = std::string());
 
     // Proccess the given stereo frame. Images must be synchronized and rectified.
-    // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.
-    // Returns the camera pose (empty if tracking fails).
     Sophus::SE3f TrackStereo(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timestamp, const vector<IMU::Point>& vImuMeas = vector<IMU::Point>(), string filename="");
 
     // Process the given rgbd frame. Depthmap must be registered to the RGB frame.
-    // Input image: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.
-    // Input depthmap: Float (CV_32F).
-    // Returns the camera pose (empty if tracking fails).
     Sophus::SE3f TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp, const vector<IMU::Point>& vImuMeas = vector<IMU::Point>(), string filename="");
 
-    // Proccess the given monocular frame and optionally imu data
-    // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.
+    // Monocular-Inertial: call GrabImuData() for each IMU sample between previous and this frame, then process image.
+    // Image: RGB (CV_8UC3) or grayscale (CV_8U). Order: 1) push all vImuMeas, 2) GrabImageMonocular (grayscale + ORB + Track).
     // Returns the camera pose (empty if tracking fails).
     Sophus::SE3f TrackMonocular(const cv::Mat &im, const double &timestamp, const vector<IMU::Point>& vImuMeas = vector<IMU::Point>(), string filename="");
 
@@ -157,6 +152,10 @@ public:
 
     void SaveTrajectoryEuRoC(const string &filename, Map* pMap);
     void SaveKeyFrameTrajectoryEuRoC(const string &filename, Map* pMap);
+
+    // Save trajectory with velocity for comparison: SLAM (fused) vs IMU-only predicted. Format: EuRoC pose + vx vy vz (SLAM) + vx vy vz (IMU pred). Use key 'v' in Viewer or call after Shutdown().
+    void SaveTrajectoryEuRoCWithVelocity(const string &filename);
+    void SaveKeyFrameTrajectoryEuRoCWithVelocity(const string &filename);
 
     // Save data used for initialization debug
     void SaveDebugData(const int &iniIdx);

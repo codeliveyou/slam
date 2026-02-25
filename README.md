@@ -138,6 +138,21 @@ Notes:
 - `BEBLID` / `TEBLID` / `LATCH` require OpenCV contrib (`xfeatures2d`).
 - `AKAZE` uses OpenCV core and is constrained to 256-bit MLDB descriptors to stay binary/BoW-compatible.
 
+# 4.2 Monocular-Inertial: image and IMU data flow
+
+For **monocular-inertial** (and stereo-inertial / RGB-D-inertial), the pipeline is:
+
+1. **IMU**: Push every IMU sample (accel, gyro, timestamp) via `GrabImuData()` *before* each image. Samples between the previous and current image timestamps are integrated in `PreintegrateIMU()` into delta rotation, velocity and position.
+2. **Image**: Each frame is converted to grayscale, then a `Frame` is built (ORB or other features extracted in the constructor), then `Track()` runs: IMU preintegration → `PredictStateIMU()` (inertial-only pose/velocity) → visual tracking (motion model or reference keyframe) → optional local mapping and BA.
+
+**Velocity comparison (SLAM vs inertial):** You can export the trajectory including velocities to compare **SLAM (fused)** and **IMU-only predicted** velocity:
+
+- In the Viewer menu, use **"Save trajectory with velocity"** (or call after run: `SaveTrajectoryEuRoCWithVelocity("CameraTrajectoryWithVelocity.txt")` and `SaveKeyFrameTrajectoryEuRoCWithVelocity("KeyFrameTrajectoryWithVelocity.txt")`).
+- Frame file format: `timestamp tx ty tz qx qy qz qw vx_slam vy_slam vz_slam vx_imu vy_imu vz_imu` (IMU columns are NaN when no IMU prediction was used).
+- Keyframe file: pose + `vx vy vz` (SLAM velocity from bundle adjustment).
+
+Relevant code areas: `Tracking::GrabImageMonocular`, `GrabImuData`, `PreintegrateIMU`, `PredictStateIMU`; `ImuTypes::Preintegrated::IntegrateNewMeasurement`; `System::TrackMonocular`.
+
 # 5. EuRoC Examples
 [EuRoC dataset](http://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets) was recorded with two pinhole cameras and an inertial sensor. We provide an example script to launch EuRoC sequences in all the sensor configurations.
 

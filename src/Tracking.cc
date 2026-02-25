@@ -36,6 +36,7 @@
 
 #include <mutex>
 #include <chrono>
+#include <limits>
 
 
 using namespace std;
@@ -49,8 +50,10 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
     mbOnlyTracking(false), mbMapUpdated(false), mbVO(false), mpORBVocabulary(pVoc), mpKeyFrameDB(pKFDB),
     mbReadyToInitializate(false), mpSystem(pSys), mpViewer(NULL), bStepByStep(false),
     mpFrameDrawer(pFrameDrawer), mpMapDrawer(pMapDrawer), mpAtlas(pAtlas), mnLastRelocFrameId(0), time_recently_lost(5.0),
-    mnInitialFrameId(0), mbCreatedMap(false), mnFirstFrameId(0), mpCamera2(nullptr), mpLastKeyFrame(static_cast<KeyFrame*>(NULL))
+    mnInitialFrameId(0), mbCreatedMap(false), mnFirstFrameId(0), mpCamera2(nullptr), mpLastKeyFrame(static_cast<KeyFrame*>(NULL)),
+    mLastImuPredictedValid(false)
 {
+    mLastImuPredictedVelocity.setZero();
     // Load camera parameters from settings file
     if(settings){
         newParameterLoader(settings);
@@ -1600,9 +1603,11 @@ Sophus::SE3f Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, co
 }
 
 
+// -------- IMAGE PROCESSING (Monocular / Monocular-Inertial): grayscale conversion -> Frame build (ORB inside) -> Track() --------
 Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp, string filename)
 {
     mImGray = im;
+    // Convert to grayscale for feature extraction (ORB uses single channel).
     if(mImGray.channels()==3)
     {
         if(mbRGB)
@@ -1618,6 +1623,7 @@ Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &times
             cvtColor(mImGray,mImGray,cv::COLOR_BGRA2GRAY);
     }
 
+    // Build current frame: ORB (or other) features are extracted inside the Frame constructor.
     if (mSensor == System::MONOCULAR)
     {
         if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET ||(lastID - initID) < mMaxFrames)
@@ -1652,12 +1658,14 @@ Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &times
 }
 
 
+// Push one IMU sample into the queue. Call this for every IMU measurement between the previous and current image timestamp (e.g. in a loop before GrabImageMonocular).
 void Tracking::GrabImuData(const IMU::Point &imuMeasurement)
 {
     unique_lock<mutex> lock(mMutexImuQueue);
     mlQueueImuData.push_back(imuMeasurement);
 }
 
+// Drain IMU queue for [t_last_frame, t_current_frame], build preintegrated delta R, V, P and attach to current frame.
 void Tracking::PreintegrateIMU()
 {
 
@@ -1677,6 +1685,7 @@ void Tracking::PreintegrateIMU()
         return;
     }
 
+    // Drain queue: keep only samples in [prev_frame_time, current_frame_time]; drop older.
     while(true)
     {
         bool bSleep = false;
@@ -1717,12 +1726,14 @@ void Tracking::PreintegrateIMU()
         return;
     }
 
+    // Preintegrate from last frame (for this frame) and accumulate in from-last-KF (for BA).
     IMU::Preintegrated* pImuPreintegratedFromLastFrame = new IMU::Preintegrated(mLastFrame.mImuBias,mCurrentFrame.mImuCalib);
 
     for(int i=0; i<n; i++)
     {
         float tstep;
         Eigen::Vector3f acc, angVel;
+        // Interpolate acc/gyro at segment boundaries so integration aligns with frame timestamps.
         if((i==0) && (i<(n-1)))
         {
             float tab = mvImuFromLastFrame[i+1].t-mvImuFromLastFrame[i].t;
@@ -1796,6 +1807,9 @@ bool Tracking::PredictStateIMU()
 
         mCurrentFrame.mImuBias = mpLastKeyFrame->GetImuBias();
         mCurrentFrame.mPredBias = mCurrentFrame.mImuBias;
+        // Store IMU-only predicted velocity for trajectory export (compare with SLAM velocity).
+        mLastImuPredictedVelocity = Vwb2;
+        mLastImuPredictedValid = true;
         return true;
     }
     else if(!mbMapUpdated)
@@ -1814,6 +1828,8 @@ bool Tracking::PredictStateIMU()
 
         mCurrentFrame.mImuBias = mLastFrame.mImuBias;
         mCurrentFrame.mPredBias = mCurrentFrame.mImuBias;
+        mLastImuPredictedVelocity = Vwb2;
+        mLastImuPredictedValid = true;
         return true;
     }
     else
@@ -1903,6 +1919,10 @@ void Tracking::Track()
 
     mLastProcessedState=mState;
 
+    // By default this frame has no IMU-only predicted velocity (e.g. first frame or no IMU).
+    mLastImuPredictedValid = false;
+
+    // -------- IMU PREINTEGRATION: integrate all samples between last and current frame into delta R, V, P --------
     if ((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD) && !mbCreatedMap)
     {
 #ifdef REGISTER_TIMES
@@ -1986,6 +2006,7 @@ void Tracking::Track()
                 }
                 else
                 {
+                    // Motion model uses IMU prediction as initial pose when available (PredictStateIMU called below for IMU sensors).
                     Verbose::PrintMess("TRACK: Track with motion model", Verbose::VERBOSITY_DEBUG);
                     bOK = TrackWithMotionModel();
                     if(!bOK)
@@ -2344,6 +2365,13 @@ void Tracking::Track()
             mlpReferences.push_back(mCurrentFrame.mpReferenceKF);
             mlFrameTimes.push_back(mCurrentFrame.mTimeStamp);
             mlbLost.push_back(mState==LOST);
+            // For velocity comparison: IMU-only predicted velocity when valid, else NaN (see SaveTrajectoryEuRoCWithVelocity).
+            if (mLastImuPredictedValid)
+                mlImuPredictedVelocities.push_back(mLastImuPredictedVelocity);
+            else {
+                Eigen::Vector3f v; v.setConstant(std::numeric_limits<float>::quiet_NaN());
+                mlImuPredictedVelocities.push_back(v);
+            }
         }
         else
         {
@@ -2352,6 +2380,12 @@ void Tracking::Track()
             mlpReferences.push_back(mlpReferences.back());
             mlFrameTimes.push_back(mlFrameTimes.back());
             mlbLost.push_back(mState==LOST);
+            if (mLastImuPredictedValid)
+                mlImuPredictedVelocities.push_back(mLastImuPredictedVelocity);
+            else {
+                Eigen::Vector3f v; v.setConstant(std::numeric_limits<float>::quiet_NaN());
+                mlImuPredictedVelocities.push_back(v);
+            }
         }
 
     }
@@ -3861,6 +3895,7 @@ void Tracking::Reset(bool bLocMap)
     mlpReferences.clear();
     mlFrameTimes.clear();
     mlbLost.clear();
+    mlImuPredictedVelocities.clear();
     mCurrentFrame = Frame();
     mnLastRelocFrameId = 0;
     mLastFrame = Frame();

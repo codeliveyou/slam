@@ -64,7 +64,7 @@ public:
     // Constructor for RGB-D cameras.
     Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera* pCamera,Frame* pPrevF = static_cast<Frame*>(NULL), const IMU::Calib &ImuCalib = IMU::Calib());
 
-    // Constructor for Monocular cameras.
+    // Constructor for Monocular (and Monocular-Inertial): pPrevF and ImuCalib used when sensor is IMU_MONOCULAR.
     Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, GeometricCamera* pCamera, cv::Mat &distCoef, const float &bf, const float &thDepth, Frame* pPrevF = static_cast<Frame*>(NULL), const IMU::Calib &ImuCalib = IMU::Calib());
 
     // Destructor
@@ -79,12 +79,11 @@ public:
     // Set the camera pose. (Imu pose is not modified!)
     void SetPose(const Sophus::SE3<float> &Tcw);
 
-    // Set IMU velocity
+    // Velocity in world frame (from IMU prediction or from BA). Used for motion model and trajectory export.
     void SetVelocity(Eigen::Vector3f Vw);
-
     Eigen::Vector3f GetVelocity() const;
 
-    // Set IMU pose and velocity (implicitly changes camera pose)
+    // Set body (IMU) pose and velocity; derives camera pose from Tbc. Called by PredictStateIMU and after BA.
     void SetImuPoseVelocity(const Eigen::Matrix3f &Rwb, const Eigen::Vector3f &twb, const Eigen::Vector3f &Vwb);
 
     Eigen::Matrix<float,3,1> GetImuPosition() const;

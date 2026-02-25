@@ -42,7 +42,9 @@ namespace IMU
 
 const float GRAVITY_VALUE=9.81;
 
-//IMU measurement (gyro, accelerometer and timestamp)
+// -------- IMU DATA TYPES (used for receiving, queueing, and integrating IMU in monocular-inertial SLAM) --------
+
+// Single IMU measurement: accelerometer (a), gyroscope (w), timestamp (t). Push these via GrabImuData().
 class Point
 {
 public:
@@ -58,7 +60,7 @@ public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-//IMU biases (gyro and accelerometer)
+// IMU biases (gyro bwx,bwy,bwz and accelerometer bax,bay,baz). Estimated in BA and used in preintegration.
 class Bias
 {
     friend class boost::serialization::access;
@@ -88,7 +90,7 @@ public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-//IMU calibration (Tbc, Tcb, noise)
+// IMU calibration: body-to-camera Tbc/Tcb, and noise covariances (Cov, CovWalk). Loaded from YAML (e.g. Tbc, NoiseGyro, NoiseAcc).
 class Calib
 {
     friend class boost::serialization::access;
@@ -125,7 +127,7 @@ public:
     bool mbIsSet;
 };
 
-//Integration of 1 gyro measurement
+// Integration of one gyro sample: delta rotation and right Jacobian for bias correction.
 class IntegratedRotation
 {
 public:
@@ -139,7 +141,8 @@ public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-//Preintegration of Imu Measurements
+// Preintegration of IMU measurements between two keyframes/frames: delta rotation (dR), velocity (dV), position (dP),
+// plus Jacobians for bias updates. Built by IntegrateNewMeasurement(); used in PredictStateIMU and inertial BA.
 class Preintegrated
 {
     friend class boost::serialization::access;

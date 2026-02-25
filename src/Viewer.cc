@@ -185,6 +185,7 @@ void Viewer::Run()
     pangolin::Var<bool> menuLocalizationMode("menu.Localization Mode",false,true);
     pangolin::Var<bool> menuReset("menu.Reset",false,false);
     pangolin::Var<bool> menuStop("menu.Stop",false,false);
+    pangolin::Var<bool> menuSaveVelocity("menu.Save trajectory with velocity",false,false);
     pangolin::Var<bool> menuStepByStep("menu.Step By Step",false,true);  // false, true
     pangolin::Var<bool> menuStep("menu.Step",false,false);
 
@@ -352,6 +353,14 @@ void Viewer::Run()
             menuFollowCamera = true;
             mpSystem->ResetActiveMap();
             menuReset = false;
+        }
+
+        if(menuSaveVelocity)
+        {
+            // Save trajectory including SLAM and IMU-predicted velocity for comparison (monocular-inertial).
+            mpSystem->SaveTrajectoryEuRoCWithVelocity("CameraTrajectoryWithVelocity.txt");
+            mpSystem->SaveKeyFrameTrajectoryEuRoCWithVelocity("KeyFrameTrajectoryWithVelocity.txt");
+            menuSaveVelocity = false;
         }
 
         if(menuStop)

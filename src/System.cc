@@ -23,6 +23,7 @@
 #include <thread>
 #include <pangolin/pangolin.h>
 #include <iomanip>
+#include <limits>
 #include <openssl/md5.h>
 #include <boost/serialization/base_object.hpp>
 #include <boost/serialization/string.hpp>
@@ -396,6 +397,7 @@ Sophus::SE3f System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const
     return Tcw;
 }
 
+// Monocular-Inertial entry: feed IMU samples between frames, then process one image (grayscale + ORB + Track).
 Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, const vector<IMU::Point>& vImuMeas, string filename)
 {
 
@@ -411,6 +413,7 @@ Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, 
         exit(-1);
     }
 
+    // Optional image resize (e.g. for different resolution than calibration).
     cv::Mat imToFeed = im.clone();
     if(settings_ && settings_->needToResize()){
         cv::Mat resizedIm;
@@ -459,6 +462,7 @@ Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, 
         }
     }
 
+    // Feed all IMU measurements that fall between the previous and current image timestamp (required for PreintegrateIMU).
     if (mSensor == System::IMU_MONOCULAR)
         for(size_t i_imu = 0; i_imu < vImuMeas.size(); i_imu++)
             mpTracker->GrabImuData(vImuMeas[i_imu]);
@@ -1148,6 +1152,112 @@ void System::SaveKeyFrameTrajectoryEuRoC(const string &filename, Map* pMap)
         }
     }
     f.close();
+}
+
+void System::SaveTrajectoryEuRoCWithVelocity(const string &filename)
+{
+    cout << endl << "Saving trajectory with velocity (SLAM + IMU predicted) to " << filename << " ..." << endl;
+    if (mpTracker->mlImuPredictedVelocities.size() != mpTracker->mlRelativeFramePoses.size()) {
+        cerr << "Velocity list size mismatch. Save trajectory with velocity only supported for same number of frames." << endl;
+        return;
+    }
+    vector<Map*> vpMaps = mpAtlas->GetAllMaps();
+    int numMaxKFs = 0;
+    Map* pBiggerMap = nullptr;
+    for(Map* pMap : vpMaps) {
+        if(pMap && (int)pMap->GetAllKeyFrames().size() > numMaxKFs) {
+            numMaxKFs = pMap->GetAllKeyFrames().size();
+            pBiggerMap = pMap;
+        }
+    }
+    if(!pBiggerMap) { cout << "No map." << endl; return; }
+    vector<KeyFrame*> vpKFs = pBiggerMap->GetAllKeyFrames();
+    sort(vpKFs.begin(), vpKFs.end(), KeyFrame::lId);
+    Sophus::SE3f Twb0;
+    if (mSensor==IMU_MONOCULAR || mSensor==IMU_STEREO || mSensor==IMU_RGBD)
+        Twb0 = vpKFs[0]->GetImuPose();
+    else
+        Twb0 = vpKFs[0]->GetPoseInverse();
+    const float nanv = std::numeric_limits<float>::quiet_NaN();
+    ofstream f(filename.c_str());
+    f << fixed;
+    list<Sophus::SE3f>::iterator lit = mpTracker->mlRelativeFramePoses.begin();
+    list<KeyFrame*>::iterator lRit = mpTracker->mlpReferences.begin();
+    list<double>::iterator lT = mpTracker->mlFrameTimes.begin();
+    list<bool>::iterator lbL = mpTracker->mlbLost.begin();
+    list<Eigen::Vector3f>::iterator lVimu = mpTracker->mlImuPredictedVelocities.begin();
+    for (; lit != mpTracker->mlRelativeFramePoses.end(); ++lit, ++lRit, ++lT, ++lbL, ++lVimu) {
+        if(*lbL) continue;
+        KeyFrame* pKF = *lRit;
+        if(!pKF) continue;
+        Sophus::SE3f Trw;
+        while(pKF->isBad()) { Trw = Trw * pKF->mTcp; pKF = pKF->GetParent(); }
+        if(!pKF || pKF->GetMap() != pBiggerMap) continue;
+        Trw = Trw * pKF->GetPose() * Twb0;
+        Eigen::Vector3f V_slam = pKF->GetVelocity();
+        Eigen::Vector3f V_imu = *lVimu;
+        if (mSensor==IMU_MONOCULAR || mSensor==IMU_STEREO || mSensor==IMU_RGBD) {
+            Sophus::SE3f Twb = (pKF->mImuCalib.mTbc * (*lit) * Trw).inverse();
+            Eigen::Quaternionf q = Twb.unit_quaternion();
+            Eigen::Vector3f twb = Twb.translation();
+            f << setprecision(6) << 1e9*(*lT) << " " << setprecision(9) << twb(0) << " " << twb(1) << " " << twb(2)
+              << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w()
+              << " " << V_slam(0) << " " << V_slam(1) << " " << V_slam(2)
+              << " " << V_imu(0) << " " << V_imu(1) << " " << V_imu(2) << endl;
+        } else {
+            Sophus::SE3f Twc = ((*lit)*Trw).inverse();
+            Eigen::Quaternionf q = Twc.unit_quaternion();
+            Eigen::Vector3f twc = Twc.translation();
+            f << setprecision(6) << 1e9*(*lT) << " " << setprecision(9) << twc(0) << " " << twc(1) << " " << twc(2)
+              << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w()
+              << " " << V_slam(0) << " " << V_slam(1) << " " << V_slam(2)
+              << " " << nanv << " " << nanv << " " << nanv << endl;
+        }
+    }
+    f.close();
+    cout << "End of saving trajectory with velocity." << endl;
+}
+
+void System::SaveKeyFrameTrajectoryEuRoCWithVelocity(const string &filename)
+{
+    cout << endl << "Saving keyframe trajectory with SLAM velocity to " << filename << " ..." << endl;
+    vector<Map*> vpMaps = mpAtlas->GetAllMaps();
+    Map* pBiggerMap = nullptr;
+    int numMaxKFs = 0;
+    for(Map* pMap : vpMaps) {
+        if(pMap && pMap->GetAllKeyFrames().size() > (size_t)numMaxKFs) {
+            numMaxKFs = pMap->GetAllKeyFrames().size();
+            pBiggerMap = pMap;
+        }
+    }
+    if(!pBiggerMap) { cout << "No map." << endl; return; }
+    vector<KeyFrame*> vpKFs = pBiggerMap->GetAllKeyFrames();
+    sort(vpKFs.begin(), vpKFs.end(), KeyFrame::lId);
+    ofstream f(filename.c_str());
+    f << fixed;
+    for(size_t i = 0; i < vpKFs.size(); i++) {
+        KeyFrame* pKF = vpKFs[i];
+        if(!pKF || pKF->isBad()) continue;
+        if (mSensor==IMU_MONOCULAR || mSensor==IMU_STEREO || mSensor==IMU_RGBD) {
+            Sophus::SE3f Twb = pKF->GetImuPose();
+            Eigen::Quaternionf q = Twb.unit_quaternion();
+            Eigen::Vector3f twb = Twb.translation();
+            Eigen::Vector3f V = pKF->GetVelocity();
+            f << setprecision(6) << 1e9*pKF->mTimeStamp << " " << setprecision(9)
+              << twb(0) << " " << twb(1) << " " << twb(2) << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w()
+              << " " << V(0) << " " << V(1) << " " << V(2) << endl;
+        } else {
+            Sophus::SE3f Twc = pKF->GetPoseInverse();
+            Eigen::Quaternionf q = Twc.unit_quaternion();
+            Eigen::Vector3f t = Twc.translation();
+            Eigen::Vector3f V = pKF->GetVelocity();
+            f << setprecision(6) << 1e9*pKF->mTimeStamp << " " << setprecision(9)
+              << t(0) << " " << t(1) << " " << t(2) << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w()
+              << " " << V(0) << " " << V(1) << " " << V(2) << endl;
+        }
+    }
+    f.close();
+    cout << "End of saving keyframe trajectory with velocity." << endl;
 }
 
 /*void System::SaveTrajectoryKITTI(const string &filename)

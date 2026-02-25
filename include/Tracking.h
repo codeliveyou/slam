@@ -68,11 +68,14 @@ public:
     bool ParseORBParamFile(cv::FileStorage &fSettings);
     bool ParseIMUParamFile(cv::FileStorage &fSettings);
 
+    // -------- IMAGE PROCESSING ENTRY POINTS --------
     // Preprocess the input and call Track(). Extract features and performs stereo matching.
     Sophus::SE3f GrabImageStereo(const cv::Mat &imRectLeft,const cv::Mat &imRectRight, const double &timestamp, string filename);
     Sophus::SE3f GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, string filename);
+    // Monocular (and Monocular-Inertial): convert image to grayscale, build Frame with ORB extraction, then Track().
     Sophus::SE3f GrabImageMonocular(const cv::Mat &im, const double &timestamp, string filename);
 
+    // -------- IMU PROCESSING: push one IMU sample into the queue (call before GrabImage* for each sample between frames).
     void GrabImuData(const IMU::Point &imuMeasurement);
 
     void SetLocalMapper(LocalMapping* pLocalMapper);
@@ -153,6 +156,8 @@ public:
     list<KeyFrame*> mlpReferences;
     list<double> mlFrameTimes;
     list<bool> mlbLost;
+    // For velocity comparison: IMU-predicted velocity (in world) at each frame, when available (else NaN).
+    list<Eigen::Vector3f> mlImuPredictedVelocities;
 
     // frames with estimated pose
     int mTrackedFr;
@@ -209,6 +214,7 @@ protected:
     bool TrackReferenceKeyFrame();
     void UpdateLastFrame();
     bool TrackWithMotionModel();
+    // Inertial-only prediction: propagate pose and velocity using preintegrated IMU (no vision). Used as initial guess.
     bool PredictStateIMU();
 
     bool Relocalization();
@@ -223,7 +229,7 @@ protected:
     bool NeedNewKeyFrame();
     void CreateNewKeyFrame();
 
-    // Perform preintegration from last frame
+    // -------- IMU PREINTEGRATION: drain queue [t_last_frame, t_current_frame], integrate acc/gyro into delta R,V,P.
     void PreintegrateIMU();
 
     // Reset IMU biases and compute frame velocity
@@ -231,15 +237,19 @@ protected:
 
     bool mbMapUpdated;
 
-    // Imu preintegration from last frame
+    // Preintegration from last keyframe (used when map was updated); from last frame otherwise.
     IMU::Preintegrated *mpImuPreintegratedFromLastKF;
 
-    // Queue of IMU measurements between frames
+    // Queue of IMU measurements (filled by GrabImuData; drained by PreintegrateIMU).
     std::list<IMU::Point> mlQueueImuData;
 
-    // Vector of IMU measurements from previous to current frame (to be filled by PreintegrateIMU)
+    // Vector of IMU measurements from previous to current frame (filled by PreintegrateIMU from mlQueueImuData).
     std::vector<IMU::Point> mvImuFromLastFrame;
     std::mutex mMutexImuQueue;
+
+    // Last IMU-only predicted velocity (set when PredictStateIMU succeeds; used for velocity comparison export).
+    Eigen::Vector3f mLastImuPredictedVelocity;
+    bool mLastImuPredictedValid;
 
     // Imu calibration parameters
     IMU::Calib *mpImuCalib;
