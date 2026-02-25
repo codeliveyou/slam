@@ -111,6 +111,10 @@ public:
 
     float GetImageScale();
 
+    // For on-screen velocity comparison (monocular-inertial): IMU-only predicted velocity when PredictStateIMU was used.
+    bool GetLastImuPredictedValid() const { return mLastImuPredictedValid; }
+    Eigen::Vector3f GetLastImuPredictedVelocity() const { return mLastImuPredictedVelocity; }
+
 #ifdef REGISTER_LOOP
     void RequestStop();
     bool isStopped();

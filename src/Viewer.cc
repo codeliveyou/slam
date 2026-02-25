@@ -21,6 +21,8 @@
 #include <pangolin/pangolin.h>
 
 #include <mutex>
+#include <sstream>
+#include <iomanip>
 
 namespace ORB_SLAM3
 {
@@ -185,7 +187,7 @@ void Viewer::Run()
     pangolin::Var<bool> menuLocalizationMode("menu.Localization Mode",false,true);
     pangolin::Var<bool> menuReset("menu.Reset",false,false);
     pangolin::Var<bool> menuStop("menu.Stop",false,false);
-    pangolin::Var<bool> menuSaveVelocity("menu.Save trajectory with velocity",false,false);
+    pangolin::Var<bool> menuSaveVelocity("menu.Save Vel",false,false);
     pangolin::Var<bool> menuStepByStep("menu.Step By Step",false,true);  // false, true
     pangolin::Var<bool> menuStep("menu.Step",false,false);
 
@@ -336,6 +338,31 @@ void Viewer::Run()
             cv::resize(toShow, toShow, cv::Size(width, height));
         }
 
+        // On-screen position and velocity (SLAM coords). Monocular: pos + SLAM vel; Monocular-inertial: + IMU vel.
+        if (!toShow.empty() && mpTracker->mCurrentFrame.HasPose())
+        {
+            Eigen::Vector3f pos = mpTracker->mCurrentFrame.GetCameraCenter();
+            std::ostringstream ss;
+            ss << std::fixed << std::setprecision(3);
+            ss << "Pos: " << pos(0) << " " << pos(1) << " " << pos(2);
+            int y = 22, dy = 22;
+            cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
+            y += dy;
+            if (mpTracker->mCurrentFrame.HasVelocity())
+            {
+                Eigen::Vector3f v = mpTracker->mCurrentFrame.GetVelocity();
+                ss.str(""); ss << "Vel(SLAM): " << v(0) << " " << v(1) << " " << v(2);
+                cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+                y += dy;
+            }
+            if ((mpTracker->mSensor == System::IMU_MONOCULAR || mpTracker->mSensor == System::IMU_STEREO || mpTracker->mSensor == System::IMU_RGBD) && mpTracker->GetLastImuPredictedValid())
+            {
+                Eigen::Vector3f vimu = mpTracker->GetLastImuPredictedVelocity();
+                ss.str(""); ss << "Vel(IMU): " << vimu(0) << " " << vimu(1) << " " << vimu(2);
+                cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 200, 0), 1, cv::LINE_AA);
+            }
+        }
+
         cv::imshow("ORB-SLAM3: Current Frame",toShow);
         cv::waitKey(mT);
 
@@ -357,9 +384,10 @@ void Viewer::Run()
 
         if(menuSaveVelocity)
         {
-            // Save trajectory including SLAM and IMU-predicted velocity for comparison (monocular-inertial).
+            std::cout << "[Viewer] Save Vel: writing files ..." << std::endl;
             mpSystem->SaveTrajectoryEuRoCWithVelocity("CameraTrajectoryWithVelocity.txt");
             mpSystem->SaveKeyFrameTrajectoryEuRoCWithVelocity("KeyFrameTrajectoryWithVelocity.txt");
+            std::cout << "[Viewer] Save Vel: done. (CameraTrajectoryWithVelocity.txt, KeyFrameTrajectoryWithVelocity.txt)" << std::endl;
             menuSaveVelocity = false;
         }
 

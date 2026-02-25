@@ -1156,21 +1156,22 @@ void System::SaveKeyFrameTrajectoryEuRoC(const string &filename, Map* pMap)
 
 void System::SaveTrajectoryEuRoCWithVelocity(const string &filename)
 {
-    cout << endl << "Saving trajectory with velocity (SLAM + IMU predicted) to " << filename << " ..." << endl;
-    if (mpTracker->mlImuPredictedVelocities.size() != mpTracker->mlRelativeFramePoses.size()) {
-        cerr << "Velocity list size mismatch. Save trajectory with velocity only supported for same number of frames." << endl;
-        return;
-    }
+    const size_t nPoses = mpTracker->mlRelativeFramePoses.size();
+    const size_t nVel = mpTracker->mlImuPredictedVelocities.size();
+    cout << endl << "Saving trajectory with velocity to " << filename << " (" << nPoses << " frames) ..." << endl;
     vector<Map*> vpMaps = mpAtlas->GetAllMaps();
-    int numMaxKFs = 0;
     Map* pBiggerMap = nullptr;
+    int numMaxKFs = 0;
     for(Map* pMap : vpMaps) {
         if(pMap && (int)pMap->GetAllKeyFrames().size() > numMaxKFs) {
             numMaxKFs = pMap->GetAllKeyFrames().size();
             pBiggerMap = pMap;
         }
     }
-    if(!pBiggerMap) { cout << "No map." << endl; return; }
+    if(!pBiggerMap) {
+        cout << "Save Vel: no map yet. Run SLAM first." << endl;
+        return;
+    }
     vector<KeyFrame*> vpKFs = pBiggerMap->GetAllKeyFrames();
     sort(vpKFs.begin(), vpKFs.end(), KeyFrame::lId);
     Sophus::SE3f Twb0;
@@ -1180,13 +1181,18 @@ void System::SaveTrajectoryEuRoCWithVelocity(const string &filename)
         Twb0 = vpKFs[0]->GetPoseInverse();
     const float nanv = std::numeric_limits<float>::quiet_NaN();
     ofstream f(filename.c_str());
+    if (!f.is_open()) {
+        cerr << "Save Vel: could not open " << filename << endl;
+        return;
+    }
     f << fixed;
     list<Sophus::SE3f>::iterator lit = mpTracker->mlRelativeFramePoses.begin();
     list<KeyFrame*>::iterator lRit = mpTracker->mlpReferences.begin();
     list<double>::iterator lT = mpTracker->mlFrameTimes.begin();
     list<bool>::iterator lbL = mpTracker->mlbLost.begin();
     list<Eigen::Vector3f>::iterator lVimu = mpTracker->mlImuPredictedVelocities.begin();
-    for (; lit != mpTracker->mlRelativeFramePoses.end(); ++lit, ++lRit, ++lT, ++lbL, ++lVimu) {
+    size_t saved = 0;
+    for (; lit != mpTracker->mlRelativeFramePoses.end(); ++lit, ++lRit, ++lT, ++lbL) {
         if(*lbL) continue;
         KeyFrame* pKF = *lRit;
         if(!pKF) continue;
@@ -1195,7 +1201,9 @@ void System::SaveTrajectoryEuRoCWithVelocity(const string &filename)
         if(!pKF || pKF->GetMap() != pBiggerMap) continue;
         Trw = Trw * pKF->GetPose() * Twb0;
         Eigen::Vector3f V_slam = pKF->GetVelocity();
-        Eigen::Vector3f V_imu = *lVimu;
+        bool have_imu = (nVel == nPoses && lVimu != mpTracker->mlImuPredictedVelocities.end());
+        Eigen::Vector3f V_imu = have_imu ? *lVimu : Eigen::Vector3f(nanv, nanv, nanv);
+        if (have_imu) ++lVimu;
         if (mSensor==IMU_MONOCULAR || mSensor==IMU_STEREO || mSensor==IMU_RGBD) {
             Sophus::SE3f Twb = (pKF->mImuCalib.mTbc * (*lit) * Trw).inverse();
             Eigen::Quaternionf q = Twb.unit_quaternion();
@@ -1211,16 +1219,17 @@ void System::SaveTrajectoryEuRoCWithVelocity(const string &filename)
             f << setprecision(6) << 1e9*(*lT) << " " << setprecision(9) << twc(0) << " " << twc(1) << " " << twc(2)
               << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w()
               << " " << V_slam(0) << " " << V_slam(1) << " " << V_slam(2)
-              << " " << nanv << " " << nanv << " " << nanv << endl;
+              << " " << V_imu(0) << " " << V_imu(1) << " " << V_imu(2) << endl;
         }
+        ++saved;
     }
     f.close();
-    cout << "End of saving trajectory with velocity." << endl;
+    cout << "Save Vel: wrote " << saved << " poses to " << filename << endl;
 }
 
 void System::SaveKeyFrameTrajectoryEuRoCWithVelocity(const string &filename)
 {
-    cout << endl << "Saving keyframe trajectory with SLAM velocity to " << filename << " ..." << endl;
+    cout << "Saving keyframe trajectory with velocity to " << filename << " ..." << endl;
     vector<Map*> vpMaps = mpAtlas->GetAllMaps();
     Map* pBiggerMap = nullptr;
     int numMaxKFs = 0;
@@ -1230,11 +1239,13 @@ void System::SaveKeyFrameTrajectoryEuRoCWithVelocity(const string &filename)
             pBiggerMap = pMap;
         }
     }
-    if(!pBiggerMap) { cout << "No map." << endl; return; }
+    if(!pBiggerMap) { cout << "Save Vel: no map yet." << endl; return; }
     vector<KeyFrame*> vpKFs = pBiggerMap->GetAllKeyFrames();
     sort(vpKFs.begin(), vpKFs.end(), KeyFrame::lId);
     ofstream f(filename.c_str());
+    if (!f.is_open()) { cerr << "Save Vel: could not open " << filename << endl; return; }
     f << fixed;
+    size_t saved = 0;
     for(size_t i = 0; i < vpKFs.size(); i++) {
         KeyFrame* pKF = vpKFs[i];
         if(!pKF || pKF->isBad()) continue;
@@ -1255,9 +1266,10 @@ void System::SaveKeyFrameTrajectoryEuRoCWithVelocity(const string &filename)
               << t(0) << " " << t(1) << " " << t(2) << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w()
               << " " << V(0) << " " << V(1) << " " << V(2) << endl;
         }
+        ++saved;
     }
     f.close();
-    cout << "End of saving keyframe trajectory with velocity." << endl;
+    cout << "Save Vel: wrote " << saved << " keyframes to " << filename << endl;
 }
 
 /*void System::SaveTrajectoryKITTI(const string &filename)

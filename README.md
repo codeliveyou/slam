@@ -145,11 +145,14 @@ For **monocular-inertial** (and stereo-inertial / RGB-D-inertial), the pipeline 
 1. **IMU**: Push every IMU sample (accel, gyro, timestamp) via `GrabImuData()` *before* each image. Samples between the previous and current image timestamps are integrated in `PreintegrateIMU()` into delta rotation, velocity and position.
 2. **Image**: Each frame is converted to grayscale, then a `Frame` is built (ORB or other features extracted in the constructor), then `Track()` runs: IMU preintegration → `PredictStateIMU()` (inertial-only pose/velocity) → visual tracking (motion model or reference keyframe) → optional local mapping and BA.
 
-**Velocity comparison (SLAM vs inertial):** You can export the trajectory including velocities to compare **SLAM (fused)** and **IMU-only predicted** velocity:
+**Position and velocity on screen:** The current frame window shows in the top-left corner (in SLAM world coordinates):
+- **Pos:** position (x, y, z)
+- **Vel(SLAM):** velocity from visual/visual-inertial tracking and optimization (shown for both monocular and monocular-inertial when available)
+- **Vel(IMU):** inertial-only predicted velocity (shown only for monocular-inertial when IMU prediction was used)
 
-- In the Viewer menu, use **"Save trajectory with velocity"** (or call after run: `SaveTrajectoryEuRoCWithVelocity("CameraTrajectoryWithVelocity.txt")` and `SaveKeyFrameTrajectoryEuRoCWithVelocity("KeyFrameTrajectoryWithVelocity.txt")`).
-- Frame file format: `timestamp tx ty tz qx qy qz qw vx_slam vy_slam vz_slam vx_imu vy_imu vz_imu` (IMU columns are NaN when no IMU prediction was used).
-- Keyframe file: pose + `vx vy vz` (SLAM velocity from bundle adjustment).
+**Velocity export:** In the Viewer menu, use **"Save Vel"** to write trajectory files including velocity. Console output confirms the save and pose count.
+- Frame file: `CameraTrajectoryWithVelocity.txt` — format `timestamp tx ty tz qx qy qz qw vx_slam vy_slam vz_slam vx_imu vy_imu vz_imu` (IMU columns are NaN for monocular).
+- Keyframe file: `KeyFrameTrajectoryWithVelocity.txt` — pose + `vx vy vz` (SLAM velocity).
 
 Relevant code areas: `Tracking::GrabImageMonocular`, `GrabImuData`, `PreintegrateIMU`, `PredictStateIMU`; `ImuTypes::Preintegrated::IntegrateNewMeasurement`; `System::TrackMonocular`.
 
