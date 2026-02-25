@@ -343,7 +343,11 @@ void Viewer::Run()
             cv::resize(toShow, toShow, cv::Size(width, height));
         }
 
-        // On-screen position and velocity (SLAM coords). Vel(SLAM)=optimized from ref KF or finite-diff (monocular); Vel(IMU)=inertial-only.
+        // On-screen position and velocity (SLAM coords). Smoothed to reduce flicker; always show when pose valid.
+        static Eigen::Vector3f s_vSlam(0, 0, 0), s_vImu(0, 0, 0);
+        static bool s_velSlamInitialized = false, s_velImuInitialized = false;
+        const float kVelSmoothAlpha = 0.88f; // blend: display = alpha*prev + (1-alpha)*raw
+
         if (!toShow.empty() && mpTracker->mCurrentFrame.HasPose())
         {
             Eigen::Vector3f pos = mpTracker->mCurrentFrame.GetCameraCenter();
@@ -353,43 +357,56 @@ void Viewer::Run()
             int y = 22, dy = 22;
             cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
             y += dy;
-            // Vel(SLAM): ref KF (BA) when available and non-zero; else monocular: finite-diff from current/last frame; else current frame
-            Eigen::Vector3f vSlam(0, 0, 0);
-            bool haveSlamVel = false;
+
+            // Raw Vel(SLAM): ref KF (BA) when non-zero; else monocular finite-diff; else current frame
+            Eigen::Vector3f vRawSlam(0, 0, 0);
+            bool haveRawSlam = false;
             KeyFrame* pRefKF = mpTracker->mCurrentFrame.mpReferenceKF;
             if (pRefKF && !pRefKF->isBad())
             {
                 Eigen::Vector3f v = pRefKF->GetVelocity();
-                if (v.norm() >= 1e-6f) { vSlam = v; haveSlamVel = true; }
+                if (v.norm() >= 1e-6f) { vRawSlam = v; haveRawSlam = true; }
             }
-            if (!haveSlamVel && (mpTracker->mSensor == System::MONOCULAR || mpTracker->mSensor == System::STEREO || mpTracker->mSensor == System::RGBD))
+            if (!haveRawSlam && (mpTracker->mSensor == System::MONOCULAR || mpTracker->mSensor == System::STEREO || mpTracker->mSensor == System::RGBD))
             {
-                // Monocular (no IMU): velocity not set on keyframes; compute from (pos_cur - pos_last) / dt
                 if (mpTracker->mLastFrame.HasPose())
                 {
                     double dt = mpTracker->mCurrentFrame.mTimeStamp - mpTracker->mLastFrame.mTimeStamp;
                     if (dt > 1e-6)
                     {
                         Eigen::Vector3f posLast = mpTracker->mLastFrame.GetCameraCenter();
-                        vSlam = (pos - posLast) / static_cast<float>(dt);
-                        haveSlamVel = true;
+                        vRawSlam = (pos - posLast) / static_cast<float>(dt);
+                        haveRawSlam = true;
                     }
                 }
             }
-            if (!haveSlamVel && mpTracker->mCurrentFrame.HasVelocity())
-                { vSlam = mpTracker->mCurrentFrame.GetVelocity(); haveSlamVel = true; }
-            if (haveSlamVel)
+            if (!haveRawSlam && mpTracker->mCurrentFrame.HasVelocity())
+                { vRawSlam = mpTracker->mCurrentFrame.GetVelocity(); haveRawSlam = true; }
+
+            if (haveRawSlam)
             {
-                ss.str(""); ss << "Vel(SLAM): " << vSlam(0) << " " << vSlam(1) << " " << vSlam(2);
-                cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
-                y += dy;
+                if (!s_velSlamInitialized) { s_vSlam = vRawSlam; s_velSlamInitialized = true; }
+                else s_vSlam = kVelSmoothAlpha * s_vSlam + (1.f - kVelSmoothAlpha) * vRawSlam;
             }
-            if ((mpTracker->mSensor == System::IMU_MONOCULAR || mpTracker->mSensor == System::IMU_STEREO || mpTracker->mSensor == System::IMU_RGBD) && mpTracker->GetLastImuPredictedValid())
+            // Always show Vel(SLAM) when we have pose (use smoothed or 0)
+            ss.str(""); ss << std::setprecision(2) << "Vel(SLAM): " << s_vSlam(0) << " " << s_vSlam(1) << " " << s_vSlam(2);
+            cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+            y += dy;
+
+            bool haveRawImu = (mpTracker->mSensor == System::IMU_MONOCULAR || mpTracker->mSensor == System::IMU_STEREO || mpTracker->mSensor == System::IMU_RGBD) && mpTracker->GetLastImuPredictedValid();
+            if (haveRawImu)
             {
                 Eigen::Vector3f vimu = mpTracker->GetLastImuPredictedVelocity();
-                ss.str(""); ss << "Vel(IMU): " << vimu(0) << " " << vimu(1) << " " << vimu(2);
+                if (!s_velImuInitialized) { s_vImu = vimu; s_velImuInitialized = true; }
+                else s_vImu = kVelSmoothAlpha * s_vImu + (1.f - kVelSmoothAlpha) * vimu;
+                ss.str(""); ss << std::setprecision(2) << "Vel(IMU): " << s_vImu(0) << " " << s_vImu(1) << " " << s_vImu(2);
                 cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 200, 0), 1, cv::LINE_AA);
             }
+        }
+        else
+        {
+            s_velSlamInitialized = false;
+            s_velImuInitialized = false;
         }
 
         // Console: body/camera frame axes expressed in SLAM (world) coordinates, every kAxesPrintInterval frames
