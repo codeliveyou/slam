@@ -343,7 +343,7 @@ void Viewer::Run()
             cv::resize(toShow, toShow, cv::Size(width, height));
         }
 
-        // On-screen position and velocity (SLAM coords). Vel(SLAM)=optimized from ref KF; Vel(IMU)=inertial-only prediction.
+        // On-screen position and velocity (SLAM coords). Vel(SLAM)=optimized from ref KF or finite-diff (monocular); Vel(IMU)=inertial-only.
         if (!toShow.empty() && mpTracker->mCurrentFrame.HasPose())
         {
             Eigen::Vector3f pos = mpTracker->mCurrentFrame.GetCameraCenter();
@@ -353,19 +353,34 @@ void Viewer::Run()
             int y = 22, dy = 22;
             cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
             y += dy;
-            // Vel(SLAM): from reference keyframe (BA-optimized) when available; else current frame
+            // Vel(SLAM): ref KF (BA) when available and non-zero; else monocular: finite-diff from current/last frame; else current frame
+            Eigen::Vector3f vSlam(0, 0, 0);
+            bool haveSlamVel = false;
             KeyFrame* pRefKF = mpTracker->mCurrentFrame.mpReferenceKF;
             if (pRefKF && !pRefKF->isBad())
             {
                 Eigen::Vector3f v = pRefKF->GetVelocity();
-                ss.str(""); ss << "Vel(SLAM): " << v(0) << " " << v(1) << " " << v(2);
-                cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
-                y += dy;
+                if (v.norm() >= 1e-6f) { vSlam = v; haveSlamVel = true; }
             }
-            else if (mpTracker->mCurrentFrame.HasVelocity())
+            if (!haveSlamVel && (mpTracker->mSensor == System::MONOCULAR || mpTracker->mSensor == System::STEREO || mpTracker->mSensor == System::RGBD))
             {
-                Eigen::Vector3f v = mpTracker->mCurrentFrame.GetVelocity();
-                ss.str(""); ss << "Vel(SLAM): " << v(0) << " " << v(1) << " " << v(2);
+                // Monocular (no IMU): velocity not set on keyframes; compute from (pos_cur - pos_last) / dt
+                if (mpTracker->mLastFrame.HasPose())
+                {
+                    double dt = mpTracker->mCurrentFrame.mTimeStamp - mpTracker->mLastFrame.mTimeStamp;
+                    if (dt > 1e-6)
+                    {
+                        Eigen::Vector3f posLast = mpTracker->mLastFrame.GetCameraCenter();
+                        vSlam = (pos - posLast) / static_cast<float>(dt);
+                        haveSlamVel = true;
+                    }
+                }
+            }
+            if (!haveSlamVel && mpTracker->mCurrentFrame.HasVelocity())
+                { vSlam = mpTracker->mCurrentFrame.GetVelocity(); haveSlamVel = true; }
+            if (haveSlamVel)
+            {
+                ss.str(""); ss << "Vel(SLAM): " << vSlam(0) << " " << vSlam(1) << " " << vSlam(2);
                 cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
                 y += dy;
             }
