@@ -358,16 +358,10 @@ void Viewer::Run()
             cv::putText(toShow, ss.str(), cv::Point(8, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
             y += dy;
 
-            // Raw Vel(SLAM): ref KF (BA) when non-zero; else monocular finite-diff; else current frame
+            // Raw Vel(SLAM): prefer per-frame (finite-diff or current frame) for real-time; fallback to ref KF
             Eigen::Vector3f vRawSlam(0, 0, 0);
             bool haveRawSlam = false;
-            KeyFrame* pRefKF = mpTracker->mCurrentFrame.mpReferenceKF;
-            if (pRefKF && !pRefKF->isBad())
-            {
-                Eigen::Vector3f v = pRefKF->GetVelocity();
-                if (v.norm() >= 1e-6f) { vRawSlam = v; haveRawSlam = true; }
-            }
-            if (!haveRawSlam && (mpTracker->mSensor == System::MONOCULAR || mpTracker->mSensor == System::STEREO || mpTracker->mSensor == System::RGBD))
+            if (mpTracker->mSensor == System::MONOCULAR || mpTracker->mSensor == System::STEREO || mpTracker->mSensor == System::RGBD)
             {
                 if (mpTracker->mLastFrame.HasPose())
                 {
@@ -382,6 +376,15 @@ void Viewer::Run()
             }
             if (!haveRawSlam && mpTracker->mCurrentFrame.HasVelocity())
                 { vRawSlam = mpTracker->mCurrentFrame.GetVelocity(); haveRawSlam = true; }
+            if (!haveRawSlam)
+            {
+                KeyFrame* pRefKF = mpTracker->mCurrentFrame.mpReferenceKF;
+                if (pRefKF && !pRefKF->isBad())
+                {
+                    Eigen::Vector3f v = pRefKF->GetVelocity();
+                    if (v.norm() >= 1e-6f) { vRawSlam = v; haveRawSlam = true; }
+                }
+            }
 
             if (haveRawSlam)
             {
@@ -409,16 +412,38 @@ void Viewer::Run()
             s_velImuInitialized = false;
         }
 
-        // Console: body/camera frame axes expressed in SLAM (world) coordinates, every kAxesPrintInterval frames
-        if (mpTracker->mCurrentFrame.HasPose() && (++s_viewerFrameCount % kAxesPrintInterval == 0))
+        // Body/camera axes in SLAM (world) frame: computed every frame, shown on-screen for real-time
+        if (!toShow.empty() && mpTracker->mCurrentFrame.HasPose())
         {
-            Eigen::Matrix3f R; // rotation from body/camera to world (columns = axes in world)
+            Eigen::Matrix3f R;
             bool isBody = (mpTracker->mSensor == System::IMU_MONOCULAR || mpTracker->mSensor == System::IMU_STEREO || mpTracker->mSensor == System::IMU_RGBD);
             if (isBody)
                 R = mpTracker->mCurrentFrame.GetImuRotation();
             else
                 R = mpTracker->mCurrentFrame.GetRwc();
-            std::cout << "[SLAM] " << (isBody ? "Body" : "Camera") << " frame axes in world (x,y,z):" << std::endl;
+            int yAxes = 78; // below Pos + Vel lines
+            std::ostringstream ssAxes;
+            ssAxes << std::fixed << std::setprecision(2);
+            ssAxes << "Xw: " << R(0,0) << " " << R(1,0) << " " << R(2,0);
+            cv::putText(toShow, ssAxes.str(), cv::Point(8, yAxes), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(200, 200, 200), 1, cv::LINE_AA);
+            yAxes += 18;
+            ssAxes.str(""); ssAxes << "Yw: " << R(0,1) << " " << R(1,1) << " " << R(2,1);
+            cv::putText(toShow, ssAxes.str(), cv::Point(8, yAxes), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(200, 200, 200), 1, cv::LINE_AA);
+            yAxes += 18;
+            ssAxes.str(""); ssAxes << "Zw: " << R(0,2) << " " << R(1,2) << " " << R(2,2);
+            cv::putText(toShow, ssAxes.str(), cv::Point(8, yAxes), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(200, 200, 200), 1, cv::LINE_AA);
+        }
+
+        // Console: same axes every kAxesPrintInterval frames (optional, for logging)
+        if (mpTracker->mCurrentFrame.HasPose() && (++s_viewerFrameCount % kAxesPrintInterval == 0))
+        {
+            Eigen::Matrix3f R;
+            bool isBody = (mpTracker->mSensor == System::IMU_MONOCULAR || mpTracker->mSensor == System::IMU_STEREO || mpTracker->mSensor == System::IMU_RGBD);
+            if (isBody)
+                R = mpTracker->mCurrentFrame.GetImuRotation();
+            else
+                R = mpTracker->mCurrentFrame.GetRwc();
+            std::cout << "[SLAM] " << (isBody ? "Body" : "Camera") << " axes in world:" << std::endl;
             std::cout << "  X: " << R(0,0) << " " << R(1,0) << " " << R(2,0) << std::endl;
             std::cout << "  Y: " << R(0,1) << " " << R(1,1) << " " << R(2,1) << std::endl;
             std::cout << "  Z: " << R(0,2) << " " << R(1,2) << " " << R(2,2) << std::endl;
