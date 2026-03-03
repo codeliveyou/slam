@@ -443,10 +443,10 @@ void Viewer::Run()
                 R = mpTracker->mCurrentFrame.GetImuRotation();
             else
                 R = mpTracker->mCurrentFrame.GetRwc();
-            std::cout << "[SLAM] " << (isBody ? "Body" : "Camera") << " axes in world:" << std::endl;
-            std::cout << "  X: " << R(0,0) << " " << R(1,0) << " " << R(2,0) << std::endl;
-            std::cout << "  Y: " << R(0,1) << " " << R(1,1) << " " << R(2,1) << std::endl;
-            std::cout << "  Z: " << R(0,2) << " " << R(1,2) << " " << R(2,2) << std::endl;
+            // std::cout << "[SLAM] " << (isBody ? "Body" : "Camera") << " axes in world:" << std::endl;
+            // std::cout << "  X: " << R(0,0) << " " << R(1,0) << " " << R(2,0) << std::endl;
+            // std::cout << "  Y: " << R(0,1) << " " << R(1,1) << " " << R(2,1) << std::endl;
+            // std::cout << "  Z: " << R(0,2) << " " << R(1,2) << " " << R(2,2) << std::endl;
         }
 
         cv::imshow("ORB-SLAM3: Current Frame",toShow);
