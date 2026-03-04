@@ -159,6 +159,23 @@ For **monocular-inertial** (and stereo-inertial / RGB-D-inertial), the pipeline 
 
 Relevant code areas: `Tracking::GrabImageMonocular`, `GrabImuData`, `PreintegrateIMU`, `PredictStateIMU`; `ImuTypes::Preintegrated::IntegrateNewMeasurement`; `System::TrackMonocular`.
 
+# 4.3 NED Map Correction
+
+Corrects the SLAM map using matched MapPoint-to-NED ground-truth positions. Handles non-uniform scale drift by giving each KeyFrame its own Sim3 (7 DoF).
+
+```cpp
+// After tracking, before Shutdown:
+std::vector<ORB_SLAM3::NEDMatch> vNEDMatches;
+for (auto& [pMP, nedXYZ] : yourMatchResults)
+    vNEDMatches.emplace_back(pMP, nedXYZ);  // MapPoint* + Eigen::Vector3d(N,E,D)
+
+SLAM.CorrectMapWithNED(vNEDMatches);  // nedWeight=1e4 by default
+SLAM.Shutdown();
+SLAM.SaveTrajectoryEuRoC("CameraTrajectory.txt");
+```
+
+Requires at least 3 matches distributed along the trajectory. `nedWeight` controls how strongly matched points are pulled to NED positions (higher = closer to exact). See `include/NEDTypes.h` for the `NEDMatch` struct and `include/System.h` for the full API.
+
 # 5. EuRoC Examples
 [EuRoC dataset](http://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets) was recorded with two pinhole cameras and an inertial sensor. We provide an example script to launch EuRoC sequences in all the sensor configurations.
 

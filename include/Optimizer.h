@@ -25,6 +25,7 @@
 #include "KeyFrame.h"
 #include "LoopClosing.h"
 #include "Frame.h"
+#include "NEDTypes.h"
 
 #include <math.h>
 
@@ -88,6 +89,16 @@ public:
 
     // Local BA in welding area when two maps are merged
     void static LocalBundleAdjustment(KeyFrame* pMainKF,vector<KeyFrame*> vpAdjustKF, vector<KeyFrame*> vpFixedKF, bool *pbStopFlag);
+
+    // Optimize the pose graph with absolute NED position constraints.
+    // Distributes scale, rotation, and translation corrections non-uniformly
+    // across all KeyFrames using matched MapPoint-to-NED-position pairs as
+    // absolute anchors, while relative Sim3 edges maintain local consistency.
+    static void OptimizeWithNEDConstraints(Map* pMap,
+                                           const std::vector<NEDMatch> &vNEDMatches,
+                                           const bool bFixScale,
+                                           const double nedWeight = 1e4,
+                                           const int nIterations = 20);
 
     // Marginalize block element (start:end,start:end). Perform Schur complement.
     // Marginalized elements are filled with zeros.

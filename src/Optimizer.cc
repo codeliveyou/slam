@@ -2112,6 +2112,265 @@ void Optimizer::OptimizeEssentialGraph(KeyFrame* pCurKF, vector<KeyFrame*> &vpFi
     }
 }
 
+void Optimizer::OptimizeWithNEDConstraints(Map* pMap,
+                                           const std::vector<NEDMatch> &vNEDMatches,
+                                           const bool bFixScale,
+                                           const double nedWeight,
+                                           const int nIterations)
+{
+    if(vNEDMatches.size() < 3)
+    {
+        Verbose::PrintMess("NED Correction: need at least 3 NED matches, got "
+                           + to_string(vNEDMatches.size()), Verbose::VERBOSITY_NORMAL);
+        return;
+    }
+
+    // --- Setup optimizer ---
+    g2o::SparseOptimizer optimizer;
+    optimizer.setVerbose(false);
+    g2o::BlockSolver_7_3::LinearSolverType* linearSolver =
+        new g2o::LinearSolverEigen<g2o::BlockSolver_7_3::PoseMatrixType>();
+    g2o::BlockSolver_7_3* solver_ptr = new g2o::BlockSolver_7_3(linearSolver);
+    g2o::OptimizationAlgorithmLevenberg* solver =
+        new g2o::OptimizationAlgorithmLevenberg(solver_ptr);
+
+    solver->setUserLambdaInit(1e-16);
+    optimizer.setAlgorithm(solver);
+
+    const vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
+    const vector<MapPoint*> vpMPs = pMap->GetAllMapPoints();
+    const unsigned int nMaxKFid = pMap->GetMaxKFid();
+
+    // Pre-optimization Sim3 for each KF (identity scale, built from current SE3 pose)
+    vector<g2o::Sim3, Eigen::aligned_allocator<g2o::Sim3>> vScw(nMaxKFid + 1);
+    vector<g2o::Sim3, Eigen::aligned_allocator<g2o::Sim3>> vCorrectedSwc(nMaxKFid + 1);
+
+    // Track which KFs have NED constraints for logging
+    set<unsigned long> sNEDConstrainedKFs;
+
+    // --- 1. Create Sim3 vertices for all KeyFrames ---
+    for(size_t i = 0; i < vpKFs.size(); i++)
+    {
+        KeyFrame* pKF = vpKFs[i];
+        if(pKF->isBad())
+            continue;
+
+        g2o::VertexSim3Expmap* VSim3 = new g2o::VertexSim3Expmap();
+        const int nIDi = pKF->mnId;
+
+        Sophus::SE3d Tcw = pKF->GetPose().cast<double>();
+        g2o::Sim3 Siw(Tcw.unit_quaternion(), Tcw.translation(), 1.0);
+        vScw[nIDi] = Siw;
+        VSim3->setEstimate(Siw);
+
+        VSim3->setId(nIDi);
+        VSim3->setMarginalized(false);
+        VSim3->_fix_scale = bFixScale;
+        // No vertex is fixed — NED constraints provide absolute reference
+        VSim3->setFixed(false);
+
+        optimizer.addVertex(VSim3);
+    }
+
+    const Eigen::Matrix<double, 7, 7> matLambda = Eigen::Matrix<double, 7, 7>::Identity();
+    const int minFeat = 100;
+
+    // --- 2. Add relative Sim3 edges (spanning tree + covisibility + loop/merge) ---
+    for(size_t i = 0; i < vpKFs.size(); i++)
+    {
+        KeyFrame* pKF = vpKFs[i];
+        if(pKF->isBad())
+            continue;
+
+        const int nIDi = pKF->mnId;
+        g2o::Sim3 Swi = vScw[nIDi].inverse();
+
+        // Spanning tree edge
+        KeyFrame* pParentKF = pKF->GetParent();
+        if(pParentKF)
+        {
+            int nIDj = pParentKF->mnId;
+            if(!pParentKF->isBad() && optimizer.vertex(nIDj))
+            {
+                g2o::Sim3 Sjw = vScw[nIDj];
+                g2o::Sim3 Sji = Sjw * Swi;
+
+                g2o::EdgeSim3* e = new g2o::EdgeSim3();
+                e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
+                e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDj)));
+                e->setMeasurement(Sji);
+                e->information() = matLambda;
+                optimizer.addEdge(e);
+            }
+        }
+
+        // Loop edges
+        const set<KeyFrame*> sLoopEdges = pKF->GetLoopEdges();
+        for(set<KeyFrame*>::const_iterator sit = sLoopEdges.begin(); sit != sLoopEdges.end(); sit++)
+        {
+            KeyFrame* pLKF = *sit;
+            if(pLKF->mnId < pKF->mnId && !pLKF->isBad() && optimizer.vertex(pLKF->mnId))
+            {
+                g2o::Sim3 Slw = vScw[pLKF->mnId];
+                g2o::Sim3 Sli = Slw * Swi;
+
+                g2o::EdgeSim3* el = new g2o::EdgeSim3();
+                el->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
+                el->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pLKF->mnId)));
+                el->setMeasurement(Sli);
+                el->information() = matLambda;
+                optimizer.addEdge(el);
+            }
+        }
+
+        // Strong covisibility edges
+        const vector<KeyFrame*> vpConnectedKFs = pKF->GetCovisiblesByWeight(minFeat);
+        for(size_t j = 0; j < vpConnectedKFs.size(); j++)
+        {
+            KeyFrame* pKFn = vpConnectedKFs[j];
+            if(pKFn && pKFn != pParentKF && !pKF->hasChild(pKFn)
+               && !pKFn->isBad() && pKFn->mnId < pKF->mnId
+               && optimizer.vertex(pKFn->mnId))
+            {
+                g2o::Sim3 Snw = vScw[pKFn->mnId];
+                g2o::Sim3 Sni = Snw * Swi;
+
+                g2o::EdgeSim3* en = new g2o::EdgeSim3();
+                en->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
+                en->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFn->mnId)));
+                en->setMeasurement(Sni);
+                en->information() = matLambda;
+                optimizer.addEdge(en);
+            }
+        }
+
+        // Inertial edges
+        if(pKF->bImu && pKF->mPrevKF && !pKF->mPrevKF->isBad()
+           && optimizer.vertex(pKF->mPrevKF->mnId))
+        {
+            g2o::Sim3 Spw = vScw[pKF->mPrevKF->mnId];
+            g2o::Sim3 Spi = Spw * Swi;
+
+            g2o::EdgeSim3* ep = new g2o::EdgeSim3();
+            ep->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
+            ep->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKF->mPrevKF->mnId)));
+            ep->setMeasurement(Spi);
+            ep->information() = matLambda;
+            optimizer.addEdge(ep);
+        }
+    }
+
+    // --- 3. Add absolute NED position constraint edges ---
+    Eigen::Matrix3d matNEDInfo = nedWeight * Eigen::Matrix3d::Identity();
+    int nNEDEdges = 0;
+
+    for(size_t i = 0; i < vNEDMatches.size(); i++)
+    {
+        MapPoint* pMP = vNEDMatches[i].pMP;
+        if(!pMP || pMP->isBad())
+            continue;
+
+        KeyFrame* pRefKF = pMP->GetReferenceKeyFrame();
+        if(!pRefKF || pRefKF->isBad())
+            continue;
+
+        const int nRefID = pRefKF->mnId;
+        if(!optimizer.vertex(nRefID))
+            continue;
+
+        // Pre-project the MapPoint into the old camera frame: P_c = S_iw_old * P_w
+        Eigen::Vector3d Pw = pMP->GetWorldPos().cast<double>();
+        Eigen::Vector3d Pc = vScw[nRefID].map(Pw);
+
+        g2o::EdgeNEDPointConstraint* eNED = new g2o::EdgeNEDPointConstraint();
+        eNED->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nRefID)));
+        eNED->setMeasurement(vNEDMatches[i].nedPos);
+        eNED->_pointInCamera = Pc;
+        eNED->information() = matNEDInfo;
+        optimizer.addEdge(eNED);
+
+        sNEDConstrainedKFs.insert(nRefID);
+        nNEDEdges++;
+    }
+
+    Verbose::PrintMess("NED Correction: " + to_string(nNEDEdges) + " NED edges on "
+                       + to_string(sNEDConstrainedKFs.size()) + " KeyFrames, "
+                       + to_string(vpKFs.size()) + " total KFs, "
+                       + to_string(vpMPs.size()) + " total MPs",
+                       Verbose::VERBOSITY_NORMAL);
+
+    if(nNEDEdges < 3)
+    {
+        Verbose::PrintMess("NED Correction: too few valid NED edges after filtering, aborting",
+                           Verbose::VERBOSITY_NORMAL);
+        return;
+    }
+
+    // --- 4. Optimize ---
+    optimizer.initializeOptimization();
+    optimizer.computeActiveErrors();
+    double errBefore = optimizer.activeChi2();
+    optimizer.optimize(nIterations);
+    optimizer.computeActiveErrors();
+    double errAfter = optimizer.activeChi2();
+
+    Verbose::PrintMess("NED Correction: chi2 before=" + to_string(errBefore)
+                       + " after=" + to_string(errAfter), Verbose::VERBOSITY_NORMAL);
+
+    // --- 5. Recover corrected poses and update KeyFrames ---
+    unique_lock<mutex> lock(pMap->mMutexMapUpdate);
+
+    for(size_t i = 0; i < vpKFs.size(); i++)
+    {
+        KeyFrame* pKFi = vpKFs[i];
+        if(pKFi->isBad())
+            continue;
+
+        const int nIDi = pKFi->mnId;
+        g2o::VertexSim3Expmap* VSim3 =
+            static_cast<g2o::VertexSim3Expmap*>(optimizer.vertex(nIDi));
+        if(!VSim3)
+            continue;
+
+        g2o::Sim3 CorrectedSiw = VSim3->estimate();
+        vCorrectedSwc[nIDi] = CorrectedSiw.inverse();
+        double s = CorrectedSiw.scale();
+
+        // Sim3:[sR t] -> SE3:[R t/s]
+        Sophus::SE3f Tiw(CorrectedSiw.rotation().cast<float>(),
+                         CorrectedSiw.translation().cast<float>() / s);
+        pKFi->SetPose(Tiw);
+    }
+
+    // --- 6. Correct all MapPoints via reference KeyFrame's Sim3 change ---
+    for(size_t i = 0; i < vpMPs.size(); i++)
+    {
+        MapPoint* pMP = vpMPs[i];
+        if(pMP->isBad())
+            continue;
+
+        KeyFrame* pRefKF = pMP->GetReferenceKeyFrame();
+        if(!pRefKF || pRefKF->isBad())
+            continue;
+
+        const int nIDr = pRefKF->mnId;
+        if(!optimizer.vertex(nIDr))
+            continue;
+
+        g2o::Sim3 Srw = vScw[nIDr];
+        g2o::Sim3 correctedSwr = vCorrectedSwc[nIDr];
+
+        Eigen::Vector3d eigP3Dw = pMP->GetWorldPos().cast<double>();
+        Eigen::Vector3d eigCorrectedP3Dw = correctedSwr.map(Srw.map(eigP3Dw));
+        pMP->SetWorldPos(eigCorrectedP3Dw.cast<float>());
+        pMP->UpdateNormalAndDepth();
+    }
+
+    pMap->IncreaseChangeIndex();
+
+    Verbose::PrintMess("NED Correction: completed successfully", Verbose::VERBOSITY_NORMAL);
+}
+
 int Optimizer::OptimizeSim3(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint *> &vpMatches1, g2o::Sim3 &g2oS12, const float th2,
                             const bool bFixScale, Eigen::Matrix<double,7,7> &mAcumHessian, const bool bAllPoints)
 {

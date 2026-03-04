@@ -1255,7 +1255,22 @@ namespace ORB_SLAM3
                 i++;
             }
         }
-        //cout << "[ORBextractor]: extracted " << _keypoints.size() << " KeyPoints" << endl;
+        std::cout << "[ORBextractor] image=" << image.cols << "x" << image.rows
+                  << " levels=" << nlevels
+                  << " total_keypoints=" << nkeypoints;
+        if(nkeypoints > 0) {
+            float minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+            for(const auto& kp : _keypoints) {
+                if(kp.pt.x < minX) minX = kp.pt.x;
+                if(kp.pt.x > maxX) maxX = kp.pt.x;
+                if(kp.pt.y < minY) minY = kp.pt.y;
+                if(kp.pt.y > maxY) maxY = kp.pt.y;
+            }
+            std::cout << " kp_range_x=[" << minX << "," << maxX << "]"
+                      << " kp_range_y=[" << minY << "," << maxY << "]";
+        }
+        std::cout << std::endl;
+
         return monoIndex;
     }
 

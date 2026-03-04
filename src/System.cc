@@ -20,6 +20,7 @@
 
 #include "System.h"
 #include "Converter.h"
+#include "Optimizer.h"
 #include <thread>
 #include <pangolin/pangolin.h>
 #include <iomanip>
@@ -1503,6 +1504,44 @@ void System::ChangeDataset()
 float System::GetImageScale()
 {
     return mpTracker->GetImageScale();
+}
+
+void System::CorrectMapWithNED(const std::vector<NEDMatch>& vNEDMatches, const double nedWeight)
+{
+    if(vNEDMatches.empty())
+    {
+        cout << "CorrectMapWithNED: no NED matches provided" << endl;
+        return;
+    }
+
+    cout << "CorrectMapWithNED: pausing local mapping..." << endl;
+    mpLocalMapper->RequestStop();
+    while(!mpLocalMapper->isStopped())
+    {
+        usleep(1000);
+    }
+
+    Map* pActiveMap = mpAtlas->GetCurrentMap();
+    if(!pActiveMap)
+    {
+        cout << "CorrectMapWithNED: no active map" << endl;
+        mpLocalMapper->Release();
+        return;
+    }
+
+    bool bFixScale = (mSensor == STEREO || mSensor == RGBD ||
+                      mSensor == IMU_STEREO || mSensor == IMU_RGBD);
+
+    cout << "CorrectMapWithNED: running NED pose-graph optimization with "
+         << vNEDMatches.size() << " constraints (weight=" << nedWeight
+         << ", fixScale=" << bFixScale << ")..." << endl;
+
+    Optimizer::OptimizeWithNEDConstraints(pActiveMap, vNEDMatches, bFixScale, nedWeight);
+
+    cout << "CorrectMapWithNED: releasing local mapping..." << endl;
+    mpLocalMapper->Release();
+
+    cout << "CorrectMapWithNED: done" << endl;
 }
 
 #ifdef REGISTER_TIMES

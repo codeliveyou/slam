@@ -39,6 +39,7 @@
 #include "Viewer.h"
 #include "ImuTypes.h"
 #include "Settings.h"
+#include "NEDTypes.h"
 
 
 namespace ORB_SLAM3
@@ -184,6 +185,14 @@ public:
     void ChangeDataset();
 
     float GetImageScale();
+
+    // Correct the active map using absolute NED position constraints.
+    // vNEDMatches: matched pairs of (MapPoint*, NED 3D position).
+    // The NED positions are assumed correct; the optimizer adjusts all
+    // KeyFrame poses and MapPoint positions to best fit these constraints
+    // while maintaining local map consistency.
+    // nedWeight: relative weight of NED constraints vs local consistency (default 100).
+    void CorrectMapWithNED(const std::vector<NEDMatch>& vNEDMatches, const double nedWeight = 1e4);
 
 #ifdef REGISTER_TIMES
     void InsertRectTime(double& time);
