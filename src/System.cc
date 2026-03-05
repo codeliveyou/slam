@@ -1510,11 +1510,10 @@ void System::CorrectMapWithNED(const std::vector<NEDMatch>& vNEDMatches, const d
 {
     if(vNEDMatches.empty())
     {
-        cout << "CorrectMapWithNED: no NED matches provided" << endl;
+        cout << "[NED] Failed: no NED matches provided" << endl;
         return;
     }
 
-    cout << "CorrectMapWithNED: pausing local mapping..." << endl;
     mpLocalMapper->RequestStop();
     while(!mpLocalMapper->isStopped())
     {
@@ -1524,7 +1523,7 @@ void System::CorrectMapWithNED(const std::vector<NEDMatch>& vNEDMatches, const d
     Map* pActiveMap = mpAtlas->GetCurrentMap();
     if(!pActiveMap)
     {
-        cout << "CorrectMapWithNED: no active map" << endl;
+        cout << "[NED] Failed: no active map" << endl;
         mpLocalMapper->Release();
         return;
     }
@@ -1532,16 +1531,12 @@ void System::CorrectMapWithNED(const std::vector<NEDMatch>& vNEDMatches, const d
     bool bFixScale = (mSensor == STEREO || mSensor == RGBD ||
                       mSensor == IMU_STEREO || mSensor == IMU_RGBD);
 
-    cout << "CorrectMapWithNED: running NED pose-graph optimization with "
-         << vNEDMatches.size() << " constraints (weight=" << nedWeight
-         << ", fixScale=" << bFixScale << ")..." << endl;
+    cout << "[NED] Starting correction: " << vNEDMatches.size()
+         << " matches, weight=" << nedWeight << ", fixScale=" << bFixScale << endl;
 
     Optimizer::OptimizeWithNEDConstraints(pActiveMap, vNEDMatches, bFixScale, nedWeight);
 
-    cout << "CorrectMapWithNED: releasing local mapping..." << endl;
     mpLocalMapper->Release();
-
-    cout << "CorrectMapWithNED: done" << endl;
 }
 
 #ifdef REGISTER_TIMES
