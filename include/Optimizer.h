@@ -97,8 +97,28 @@ public:
     static void OptimizeWithNEDConstraints(Map* pMap,
                                            const std::vector<NEDMatch> &vNEDMatches,
                                            const bool bFixScale,
-                                           const double nedWeight = 1e4,
+                                           const double nedWeight = 10.0,
                                            const int nIterations = 20);
+
+    // Incremental NED correction: local pose-graph optimization around new
+    // NED matches only.  Called after the first full correction; fixed
+    // boundary KFs anchor the local window to the already-corrected map.
+    static void IncrementalNEDCorrection(Map* pMap,
+                                         const std::vector<NEDMatch> &vNEDMatches,
+                                         const bool bFixScale,
+                                         const double nedWeight = 10.0,
+                                         const int nIterations = 20);
+
+    // Compute SLAM→NED scale from point correspondences (read-only, no map modification).
+    // One frame: scale from Horn's Sim3 on matched point pairs.
+    // Returns s such that P_ned ≈ s * R * P_slam + t.  Returns -1 on failure.
+    static double ComputeSlamToNEDScale(const std::vector<NEDMatch> &vMatches);
+
+    // Two frames: combines all point pairs for Horn's Sim3 (spatial baseline
+    // improves scale observability) and cross-validates with the centroid
+    // baseline ratio between the two frames.  Returns -1 on failure.
+    static double ComputeSlamToNEDScale(const std::vector<NEDMatch> &vMatches1,
+                                        const std::vector<NEDMatch> &vMatches2);
 
     // Marginalize block element (start:end,start:end). Perform Schur complement.
     // Marginalized elements are filled with zeros.

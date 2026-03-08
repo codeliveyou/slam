@@ -174,7 +174,26 @@ SLAM.Shutdown();
 SLAM.SaveTrajectoryEuRoC("CameraTrajectory.txt");
 ```
 
-Requires at least 3 matches distributed along the trajectory. `nedWeight` controls how strongly matched points are pulled to NED positions (higher = closer to exact). See `include/NEDTypes.h` for the `NEDMatch` struct and `include/System.h` for the full API.
+Requires at least 3 matches distributed along the trajectory. See `include/NEDTypes.h` for the `NEDMatch` struct and `include/System.h` for the full API.
+
+### nedWeight and NED accuracy
+
+The `nedWeight` parameter is the inverse variance of your NED position measurement error. Set it according to how accurate your georeferenced positions are:
+
+| NED accuracy (±σ) | nedWeight = 1/σ² |
+|---|---|
+| ±10 m | 0.01 |
+| ±1 m | 1 |
+| ±0.1 m (10 cm) | 100 |
+| ±0.01 m (1 cm) | 1e4 (default) |
+| ±0.001 m (1 mm) | 1e6 |
+
+The optimizer minimizes `Σ(nedWeight × ‖e_ned‖²) + Σ(‖e_relative‖²)` where relative edges (spanning tree, covisibility, loop) have unit weight. The ratio between `nedWeight` and relative edge weight controls the trade-off:
+
+- **nedWeight too high** (overconfident): forces MapPoints to match NED targets even if those targets have errors, distorting local geometry.
+- **nedWeight too low** (underconfident): relative constraints dominate and the NED correction becomes weak.
+
+Note that `nedWeight` only affects the fine-tuning stage (per-KeyFrame pose-graph optimization). The initial global Sim3 alignment (Horn's method + RANSAC) is computed purely from point correspondences and is not affected by this parameter.
 
 # 5. EuRoC Examples
 [EuRoC dataset](http://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets) was recorded with two pinhole cameras and an inertial sensor. We provide an example script to launch EuRoC sequences in all the sensor configurations.

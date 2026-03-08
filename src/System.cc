@@ -1531,12 +1531,31 @@ void System::CorrectMapWithNED(const std::vector<NEDMatch>& vNEDMatches, const d
     bool bFixScale = (mSensor == STEREO || mSensor == RGBD ||
                       mSensor == IMU_STEREO || mSensor == IMU_RGBD);
 
-    cout << "[NED] Starting correction: " << vNEDMatches.size()
-         << " matches, weight=" << nedWeight << ", fixScale=" << bFixScale << endl;
-
-    Optimizer::OptimizeWithNEDConstraints(pActiveMap, vNEDMatches, bFixScale, nedWeight);
+    if(!pActiveMap->IsNEDCorrected())
+    {
+        cout << "[NED] Full correction: " << vNEDMatches.size()
+             << " matches, weight=" << nedWeight << ", fixScale=" << bFixScale << endl;
+        Optimizer::OptimizeWithNEDConstraints(pActiveMap, vNEDMatches, bFixScale, nedWeight);
+    }
+    else
+    {
+        cout << "[NED] Incremental correction: " << vNEDMatches.size()
+             << " matches, weight=" << nedWeight << ", fixScale=" << bFixScale << endl;
+        Optimizer::IncrementalNEDCorrection(pActiveMap, vNEDMatches, bFixScale, nedWeight);
+    }
 
     mpLocalMapper->Release();
+}
+
+double System::GetSlamToNEDScale(const std::vector<NEDMatch>& vMatches)
+{
+    return Optimizer::ComputeSlamToNEDScale(vMatches);
+}
+
+double System::GetSlamToNEDScale(const std::vector<NEDMatch>& vMatches1,
+                                  const std::vector<NEDMatch>& vMatches2)
+{
+    return Optimizer::ComputeSlamToNEDScale(vMatches1, vMatches2);
 }
 
 #ifdef REGISTER_TIMES

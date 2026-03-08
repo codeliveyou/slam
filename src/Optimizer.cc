@@ -38,6 +38,7 @@
 #include "Converter.h"
 
 #include<mutex>
+#include<numeric>
 
 #include "OptimizableTypes.h"
 
@@ -2112,6 +2113,195 @@ void Optimizer::OptimizeEssentialGraph(KeyFrame* pCurKF, vector<KeyFrame*> &vpFi
     }
 }
 
+// =========================================================================
+// Scale computation (read-only, no map modification)
+//
+// Uses pairwise distance ratios: for any two point pairs (i,j),
+//   scale_ij = ||P_ned_i - P_ned_j|| / ||P_slam_i - P_slam_j||
+// The median of all ratios is robust to up to 50% outliers without
+// needing rotation or translation estimation.
+//
+// Key insight: SLAM scale drifts over time, so mixing old and new points
+// gives an averaged (outdated) scale.  These functions return the LATEST
+// scale by prioritizing the most recent frame's data.
+// =========================================================================
+
+static void collectPairs(const vector<NEDMatch>& vMatches,
+                          vector<Eigen::Vector3d>& vSlam,
+                          vector<Eigen::Vector3d>& vNED)
+{
+    for(const auto& m : vMatches)
+    {
+        if(!m.pMP || m.pMP->isBad()) continue;
+        vSlam.push_back(m.pMP->GetWorldPos().cast<double>());
+        vNED.push_back(m.nedPos);
+    }
+}
+
+static double robustMedian(vector<double>& v)
+{
+    if(v.empty()) return -1.0;
+    size_t n = v.size();
+    size_t mid = n / 2;
+    nth_element(v.begin(), v.begin() + mid, v.end());
+    if(n % 2 == 1) return v[mid];
+    double upper = v[mid];
+    nth_element(v.begin(), v.begin() + mid - 1, v.end());
+    return (v[mid - 1] + upper) * 0.5;
+}
+
+static double pairwiseMedianScale(const vector<Eigen::Vector3d>& vSlam,
+                                    const vector<Eigen::Vector3d>& vNED,
+                                    double minSlamDist = 1e-4)
+{
+    const size_t N = vSlam.size();
+    if(N < 2) return -1.0;
+
+    vector<double> ratios;
+    ratios.reserve(N * (N - 1) / 2);
+    for(size_t i = 0; i < N; i++)
+    {
+        for(size_t j = i + 1; j < N; j++)
+        {
+            double dSlam = (vSlam[j] - vSlam[i]).norm();
+            if(dSlam < minSlamDist) continue;
+            double dNED = (vNED[j] - vNED[i]).norm();
+            ratios.push_back(dNED / dSlam);
+        }
+    }
+    return robustMedian(ratios);
+}
+
+static double crossPairwiseScale(const vector<Eigen::Vector3d>& vSlam1,
+                                   const vector<Eigen::Vector3d>& vNED1,
+                                   const vector<Eigen::Vector3d>& vSlam2,
+                                   const vector<Eigen::Vector3d>& vNED2,
+                                   double minSlamDist = 1e-4)
+{
+    vector<double> ratios;
+    ratios.reserve(vSlam1.size() * vSlam2.size());
+    for(size_t i = 0; i < vSlam1.size(); i++)
+    {
+        for(size_t j = 0; j < vSlam2.size(); j++)
+        {
+            double dSlam = (vSlam2[j] - vSlam1[i]).norm();
+            if(dSlam < minSlamDist) continue;
+            double dNED = (vNED2[j] - vNED1[i]).norm();
+            ratios.push_back(dNED / dSlam);
+        }
+    }
+    return robustMedian(ratios);
+}
+
+double Optimizer::ComputeSlamToNEDScale(const std::vector<NEDMatch>& vMatches)
+{
+    vector<Eigen::Vector3d> vSlam, vNED;
+    collectPairs(vMatches, vSlam, vNED);
+
+    if(vSlam.size() < 2)
+    {
+        cout << "[NED-Scale] Failed: need >= 2 valid pairs, got " << vSlam.size() << endl;
+        return -1.0;
+    }
+
+    double scale = pairwiseMedianScale(vSlam, vNED);
+
+    if(scale > 0)
+        cout << "[NED-Scale] scale=" << scale
+             << " (median of " << vSlam.size() * (vSlam.size()-1) / 2
+             << " pairwise ratios from " << vSlam.size() << " points)" << endl;
+    else
+        cout << "[NED-Scale] Failed: all pairwise SLAM distances too small" << endl;
+
+    return scale;
+}
+
+double Optimizer::ComputeSlamToNEDScale(const std::vector<NEDMatch>& vMatches1,
+                                         const std::vector<NEDMatch>& vMatches2)
+{
+    vector<Eigen::Vector3d> vSlam1, vNED1, vSlam2, vNED2;
+    collectPairs(vMatches1, vSlam1, vNED1);
+    collectPairs(vMatches2, vSlam2, vNED2);
+
+    const size_t n1 = vSlam1.size(), n2 = vSlam2.size();
+    if(n1 + n2 < 2)
+    {
+        cout << "[NED-Scale] Failed: need >= 2 total pairs" << endl;
+        return -1.0;
+    }
+
+    // --- Method A: Latest frame only (most current scale) ---
+    // Scale drifts over time, so frame 2 (more recent) gives the
+    // most up-to-date local scale.
+    double scaleLatest = -1.0;
+    if(n2 >= 2)
+        scaleLatest = pairwiseMedianScale(vSlam2, vNED2);
+
+    // --- Method B: Trajectory baseline ---
+    // Centroid-to-centroid distance ratio between frames.
+    // Captures scale at the spatial extent of camera motion —
+    // directly relevant for velocity conversion.
+    double scaleTrajectory = -1.0;
+    if(n1 >= 1 && n2 >= 1)
+    {
+        Eigen::Vector3d cS1 = Eigen::Vector3d::Zero(), cN1 = Eigen::Vector3d::Zero();
+        for(size_t i = 0; i < n1; i++) { cS1 += vSlam1[i]; cN1 += vNED1[i]; }
+        cS1 /= (double)n1;  cN1 /= (double)n1;
+
+        Eigen::Vector3d cS2 = Eigen::Vector3d::Zero(), cN2 = Eigen::Vector3d::Zero();
+        for(size_t i = 0; i < n2; i++) { cS2 += vSlam2[i]; cN2 += vNED2[i]; }
+        cS2 /= (double)n2;  cN2 /= (double)n2;
+
+        double dSlam = (cS2 - cS1).norm();
+        double dNED  = (cN2 - cN1).norm();
+        if(dSlam > 1e-4)
+            scaleTrajectory = dNED / dSlam;
+    }
+
+    // --- Method C: Cross-frame pairwise ratios ---
+    // Uses distances between frame1 points and frame2 points.
+    // Larger spatial baseline than within-frame, but mixes old+new scale.
+    double scaleCross = -1.0;
+    if(n1 >= 1 && n2 >= 1)
+        scaleCross = crossPairwiseScale(vSlam1, vNED1, vSlam2, vNED2);
+
+    // --- Combine ---
+    // Priority: latest frame (most current) > trajectory (motion-scale) > cross-frame
+    double finalScale;
+    if(scaleLatest > 0 && scaleTrajectory > 0)
+    {
+        // Latest frame is the primary signal.
+        // Trajectory provides independent validation at the motion scale.
+        // If they agree within 20%, trust the average weighted toward latest.
+        double ratio = scaleLatest / scaleTrajectory;
+        if(ratio > 0.8 && ratio < 1.2)
+            finalScale = 0.7 * scaleLatest + 0.3 * scaleTrajectory;
+        else
+            finalScale = scaleLatest;
+    }
+    else if(scaleLatest > 0)
+        finalScale = scaleLatest;
+    else if(scaleTrajectory > 0)
+        finalScale = scaleTrajectory;
+    else if(scaleCross > 0)
+        finalScale = scaleCross;
+    else
+    {
+        // Last resort: combine all points and compute
+        vector<Eigen::Vector3d> vSlamAll(vSlam1), vNEDAll(vNED1);
+        vSlamAll.insert(vSlamAll.end(), vSlam2.begin(), vSlam2.end());
+        vNEDAll.insert(vNEDAll.end(), vNED2.begin(), vNED2.end());
+        finalScale = pairwiseMedianScale(vSlamAll, vNEDAll);
+    }
+
+    cout << "[NED-Scale] Latest=" << scaleLatest
+         << " Trajectory=" << scaleTrajectory
+         << " Cross=" << scaleCross
+         << " -> Final=" << finalScale << endl;
+
+    return finalScale;
+}
+
 void Optimizer::OptimizeWithNEDConstraints(Map* pMap,
                                            const std::vector<NEDMatch> &vNEDMatches,
                                            const bool bFixScale,
@@ -2267,12 +2457,15 @@ void Optimizer::OptimizeWithNEDConstraints(Map* pMap,
          << ", RANSAC thresh=" << ransacThresh << endl;
 
     // =====================================================================
-    // Stage 2: Pre-correct all KF poses with global Sim3
-    // Following the same pattern as CorrectLoop:
-    //   - vNonCorrectedScw: original Sim3 (for relative edge measurements)
-    //   - vCorrectedScw:    globally-corrected Sim3 (for vertex initialization)
-    // The discrepancy between corrected vertices and non-corrected edge
-    // measurements creates the tension that the optimizer distributes.
+    // Stage 2: Pre-correct all KF poses with global Sim3 + smooth
+    // interpolated local residuals.
+    //
+    // Uniform global Sim3 alone makes all relative edges start at zero
+    // error, so the optimizer can only create local spikes at NED-matched
+    // KFs.  By adding smoothly interpolated residuals (the per-match
+    // drift that the global Sim3 cannot capture), we create non-uniform
+    // vertex initialization → non-zero relative edge errors → the
+    // optimizer distributes corrections smoothly, just like CorrectLoop.
     // =====================================================================
 
     const vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
@@ -2283,13 +2476,9 @@ void Optimizer::OptimizeWithNEDConstraints(Map* pMap,
     vector<g2o::Sim3, Eigen::aligned_allocator<g2o::Sim3>> vCorrectedScw(nMaxKFid + 1);
     vector<g2o::Sim3, Eigen::aligned_allocator<g2o::Sim3>> vCorrectedSwc(nMaxKFid + 1);
 
-    // S_iw_corrected = S_iw_old * S_global^{-1}
-    // Because the vertex stores the world-to-camera Sim3, and we want
-    // the "world" to now be NED coordinates:
-    //   P_camera = S_iw_old * P_slam = S_iw_old * S_global^{-1} * P_ned
-    //   So S_iw_corrected_in_NED = S_iw_old * Sim3_ned_slam^{-1}
     g2o::Sim3 Sim3_slam_ned = Sim3_ned_slam.inverse();
 
+    // 2a. Store non-corrected poses and apply uniform global Sim3
     for(size_t i = 0; i < vpKFs.size(); i++)
     {
         KeyFrame* pKF = vpKFs[i];
@@ -2302,6 +2491,89 @@ void Optimizer::OptimizeWithNEDConstraints(Map* pMap,
 
         g2o::Sim3 correctedSiw = Siw * Sim3_slam_ned;
         vCorrectedScw[nIDi] = correctedSiw;
+    }
+
+    // 2b. Compute per-NED-match residuals after global Sim3 and
+    //     interpolate them smoothly across all KFs by timestamp.
+    {
+        // Accumulate residuals per reference KF
+        map<unsigned int, pair<Eigen::Vector3d, int>> mRefResiduals;
+        for(size_t k = 0; k < vValidIdx.size(); k++)
+        {
+            size_t i = vValidIdx[k];
+            MapPoint* pMP = vNEDMatches[i].pMP;
+            KeyFrame* pRefKF = pMP->GetReferenceKeyFrame();
+            if(!pRefKF || pRefKF->isBad()) continue;
+            Eigen::Vector3d residual = vNEDPts[k] - Sim3_ned_slam.map(vSlamPts[k]);
+            unsigned int refId = pRefKF->mnId;
+            if(mRefResiduals.count(refId))
+            {
+                mRefResiduals[refId].first += residual;
+                mRefResiduals[refId].second++;
+            }
+            else
+                mRefResiduals[refId] = {residual, 1};
+        }
+
+        // Build id→KF* lookup for timestamp access
+        map<unsigned int, KeyFrame*> mKFById;
+        for(auto* pKF : vpKFs)
+            if(!pKF->isBad())
+                mKFById[pKF->mnId] = pKF;
+
+        // Sorted timeline of (timestamp, averaged_delta)
+        vector<pair<double, Eigen::Vector3d>> vTimeline;
+        for(auto& kv : mRefResiduals)
+        {
+            auto it = mKFById.find(kv.first);
+            if(it == mKFById.end()) continue;
+            double t = it->second->mTimeStamp;
+            Eigen::Vector3d avgDelta = kv.second.first / (double)kv.second.second;
+            vTimeline.push_back({t, avgDelta});
+        }
+        sort(vTimeline.begin(), vTimeline.end(),
+             [](const pair<double, Eigen::Vector3d>& a,
+                const pair<double, Eigen::Vector3d>& b){ return a.first < b.first; });
+
+        if(!vTimeline.empty())
+        {
+            for(size_t i = 0; i < vpKFs.size(); i++)
+            {
+                KeyFrame* pKF = vpKFs[i];
+                if(pKF->isBad()) continue;
+                const int nIDi = pKF->mnId;
+                double t = pKF->mTimeStamp;
+
+                Eigen::Vector3d delta;
+                if(vTimeline.size() == 1 || t <= vTimeline.front().first)
+                    delta = vTimeline.front().second;
+                else if(t >= vTimeline.back().first)
+                    delta = vTimeline.back().second;
+                else
+                {
+                    auto it = lower_bound(vTimeline.begin(), vTimeline.end(),
+                                          make_pair(t, Eigen::Vector3d::Zero()),
+                                          [](const pair<double, Eigen::Vector3d>& a,
+                                             const pair<double, Eigen::Vector3d>& b)
+                                          { return a.first < b.first; });
+                    auto it_after = it;
+                    auto it_before = prev(it);
+                    double alpha = (t - it_before->first)
+                                 / (it_after->first - it_before->first);
+                    delta = (1.0 - alpha) * it_before->second
+                          + alpha * it_after->second;
+                }
+
+                // Shift camera center by +delta in NED world frame:
+                // S_iw_new = S_iw_old * Sim3(I, -delta, 1)
+                g2o::Sim3 deltaTransform(Eigen::Matrix3d::Identity(), -delta, 1.0);
+                vCorrectedScw[nIDi] = vCorrectedScw[nIDi] * deltaTransform;
+            }
+
+            cout << "[NED] Smooth interpolation: " << vTimeline.size()
+                 << " anchor KFs, residuals interpolated across "
+                 << vpKFs.size() << " KFs by timestamp" << endl;
+        }
     }
 
     // =====================================================================
@@ -2337,7 +2609,7 @@ void Optimizer::OptimizeWithNEDConstraints(Map* pMap,
         optimizer.addVertex(VSim3);
     }
 
-    const Eigen::Matrix<double, 7, 7> matLambda = Eigen::Matrix<double, 7, 7>::Identity();
+    const Eigen::Matrix<double, 7, 7> matLambda = 10.0 * Eigen::Matrix<double, 7, 7>::Identity();
     const int minFeat = 100;
 
     // --- Relative Sim3 edges using NON-CORRECTED measurements ---
@@ -2507,7 +2779,499 @@ void Optimizer::OptimizeWithNEDConstraints(Map* pMap,
     }
 
     pMap->IncreaseChangeIndex();
+    pMap->InformNewBigChange();
+    pMap->SetNEDCorrected(true, pMap->GetMaxKFid());
     cout << "[NED] Correction completed successfully" << endl;
+}
+
+// =========================================================================
+// Incremental NED correction: local pose-graph around new NED matches.
+// The map is already in NED frame from a previous full correction.
+// Only a local window of KFs is optimized; boundary KFs are fixed.
+// =========================================================================
+void Optimizer::IncrementalNEDCorrection(Map* pMap,
+                                         const std::vector<NEDMatch> &vNEDMatches,
+                                         const bool bFixScale,
+                                         const double nedWeight,
+                                         const int nIterations)
+{
+    if(vNEDMatches.size() < 3)
+    {
+        cout << "[NED-Inc] Failed: need at least 3 matches, got " << vNEDMatches.size() << endl;
+        return;
+    }
+
+    const long unsigned int lastCorrectedId = pMap->GetLastNEDCorrectedKFId();
+
+    // -----------------------------------------------------------------
+    // Step 1: Validate matches and collect 3D point pairs
+    // -----------------------------------------------------------------
+    vector<Eigen::Vector3d> vSlamPts, vNEDPts;
+    vector<size_t> vValidIdx;
+    set<KeyFrame*> sNEDRefKFs;
+
+    for(size_t i = 0; i < vNEDMatches.size(); i++)
+    {
+        MapPoint* pMP = vNEDMatches[i].pMP;
+        if(!pMP || pMP->isBad()) continue;
+        KeyFrame* pRefKF = pMP->GetReferenceKeyFrame();
+        if(!pRefKF || pRefKF->isBad()) continue;
+        vSlamPts.push_back(pMP->GetWorldPos().cast<double>());
+        vNEDPts.push_back(vNEDMatches[i].nedPos);
+        vValidIdx.push_back(i);
+        sNEDRefKFs.insert(pRefKF);
+    }
+
+    const size_t N = vSlamPts.size();
+    if(N < 3)
+    {
+        cout << "[NED-Inc] Failed: too few valid matches (" << N << ")" << endl;
+        return;
+    }
+
+    // Compute local Sim3 (drift since last correction, should be near identity)
+    auto computeSim3 = [&](const vector<size_t>& idx, bool fixScale) -> g2o::Sim3
+    {
+        const size_t n = idx.size();
+        Eigen::Vector3d cS = Eigen::Vector3d::Zero(), cN = Eigen::Vector3d::Zero();
+        for(size_t k = 0; k < n; k++) { cS += vSlamPts[idx[k]]; cN += vNEDPts[idx[k]]; }
+        cS /= (double)n;  cN /= (double)n;
+
+        Eigen::Matrix3d Mcov = Eigen::Matrix3d::Zero();
+        double sSq = 0.0;
+        for(size_t k = 0; k < n; k++)
+        {
+            Eigen::Vector3d ps = vSlamPts[idx[k]] - cS;
+            Eigen::Vector3d pn = vNEDPts[idx[k]]  - cN;
+            Mcov += pn * ps.transpose();
+            sSq += ps.squaredNorm();
+        }
+
+        Eigen::JacobiSVD<Eigen::Matrix3d> svd(Mcov, Eigen::ComputeFullU | Eigen::ComputeFullV);
+        Eigen::Matrix3d U = svd.matrixU(), V = svd.matrixV();
+        Eigen::Matrix3d D = Eigen::Matrix3d::Identity();
+        if(U.determinant() * V.determinant() < 0) D(2,2) = -1.0;
+        Eigen::Matrix3d R = U * D * V.transpose();
+
+        double s = 1.0;
+        if(!fixScale && sSq > 1e-10)
+        {
+            double num = 0.0;
+            for(size_t k = 0; k < n; k++)
+            {
+                Eigen::Vector3d ps = vSlamPts[idx[k]] - cS;
+                Eigen::Vector3d pn = vNEDPts[idx[k]]  - cN;
+                num += pn.dot(R * ps);
+            }
+            s = num / sSq;
+        }
+
+        Eigen::Vector3d t = cN - s * R * cS;
+        return g2o::Sim3(R, t, s);
+    };
+
+    vector<size_t> allIdx(N);
+    iota(allIdx.begin(), allIdx.end(), 0);
+    g2o::Sim3 localSim3 = computeSim3(allIdx, bFixScale);
+    double localScale = localSim3.scale();
+
+    cout << "[NED-Inc] Local drift Sim3: scale=" << localScale << endl;
+
+    // -----------------------------------------------------------------
+    // Step 2: Select local KF window
+    // -----------------------------------------------------------------
+    set<KeyFrame*> sLocalKFs;
+    set<KeyFrame*> sBoundaryKFs;
+
+    // Seed: NED-matched reference KFs
+    for(auto* pKF : sNEDRefKFs)
+        sLocalKFs.insert(pKF);
+
+    // Expand by 2 covisibility hops
+    set<KeyFrame*> sHop1;
+    for(auto* pKF : sNEDRefKFs)
+    {
+        vector<KeyFrame*> vpNeigh = pKF->GetBestCovisibilityKeyFrames(15);
+        for(auto* pN : vpNeigh)
+            if(pN && !pN->isBad())
+                sHop1.insert(pN);
+    }
+    for(auto* pKF : sHop1)
+        sLocalKFs.insert(pKF);
+
+    set<KeyFrame*> sHop2;
+    for(auto* pKF : sHop1)
+    {
+        vector<KeyFrame*> vpNeigh = pKF->GetBestCovisibilityKeyFrames(10);
+        for(auto* pN : vpNeigh)
+            if(pN && !pN->isBad())
+                sHop2.insert(pN);
+    }
+    for(auto* pKF : sHop2)
+        sLocalKFs.insert(pKF);
+
+    // Add all KFs newer than lastCorrectedId (uncorrected frontier)
+    const vector<KeyFrame*> vpAllKFs = pMap->GetAllKeyFrames();
+    for(auto* pKF : vpAllKFs)
+    {
+        if(!pKF->isBad() && pKF->mnId > lastCorrectedId)
+            sLocalKFs.insert(pKF);
+    }
+
+    // Classify boundary vs interior.  Only already-corrected KFs
+    // (id <= lastCorrectedId) at the window edge may be fixed as anchors.
+    // New KFs (id > lastCorrectedId) are ALWAYS free even if they sit at
+    // the edge, because their poses carry drift that needs correction.
+    for(auto* pKF : sLocalKFs)
+    {
+        if(pKF->mnId > lastCorrectedId) continue;
+
+        KeyFrame* pParent = pKF->GetParent();
+        if(pParent && !pParent->isBad() && sLocalKFs.find(pParent) == sLocalKFs.end())
+        {
+            sBoundaryKFs.insert(pKF);
+            continue;
+        }
+        vector<KeyFrame*> vpCovis = pKF->GetCovisiblesByWeight(100);
+        for(auto* pC : vpCovis)
+        {
+            if(pC && !pC->isBad() && sLocalKFs.find(pC) == sLocalKFs.end())
+            {
+                sBoundaryKFs.insert(pKF);
+                break;
+            }
+        }
+    }
+
+    // Ensure at least one fixed vertex exists
+    if(sBoundaryKFs.empty() && !sLocalKFs.empty())
+    {
+        long unsigned int minId = ULONG_MAX;
+        KeyFrame* pOldest = nullptr;
+        for(auto* pKF : sLocalKFs)
+            if(pKF->mnId < minId) { minId = pKF->mnId; pOldest = pKF; }
+        if(pOldest) sBoundaryKFs.insert(pOldest);
+    }
+
+    const size_t nLocal = sLocalKFs.size();
+    const size_t nFixed = sBoundaryKFs.size();
+
+    if(nLocal < 3)
+    {
+        cout << "[NED-Inc] Failed: local window too small (" << nLocal << " KFs)" << endl;
+        return;
+    }
+
+    // -----------------------------------------------------------------
+    // Step 3: Build local pose graph
+    // -----------------------------------------------------------------
+    const unsigned int nMaxKFid = pMap->GetMaxKFid();
+
+    vector<g2o::Sim3, Eigen::aligned_allocator<g2o::Sim3>> vNonCorrectedScw(nMaxKFid + 1);
+    vector<g2o::Sim3, Eigen::aligned_allocator<g2o::Sim3>> vCorrectedScw(nMaxKFid + 1);
+    vector<g2o::Sim3, Eigen::aligned_allocator<g2o::Sim3>> vCorrectedSwc(nMaxKFid + 1);
+
+    // 3a. Store all current poses (all start at their current pose)
+    for(auto* pKF : sLocalKFs)
+    {
+        const int nIDi = pKF->mnId;
+        Sophus::SE3d Tcw = pKF->GetPose().cast<double>();
+        g2o::Sim3 Siw(Tcw.unit_quaternion(), Tcw.translation(), 1.0);
+        vNonCorrectedScw[nIDi] = Siw;
+        vCorrectedScw[nIDi] = Siw;
+    }
+
+    // Also store poses for boundary KFs' neighbors outside the window
+    for(auto* pKF : sBoundaryKFs)
+    {
+        KeyFrame* pParent = pKF->GetParent();
+        if(pParent && !pParent->isBad() && sLocalKFs.find(pParent) == sLocalKFs.end())
+        {
+            Sophus::SE3d Tcw = pParent->GetPose().cast<double>();
+            vNonCorrectedScw[pParent->mnId] = g2o::Sim3(Tcw.unit_quaternion(), Tcw.translation(), 1.0);
+        }
+    }
+
+    // 3b. Smooth residual interpolation — same principle as the full
+    //     correction's Stage 2b.  Boundary KFs act as delta=0 anchors
+    //     (already correct from previous correction).  NED-matched ref KFs
+    //     carry the measured drift.  All other free KFs are interpolated
+    //     by timestamp so the optimizer starts from a smooth trajectory
+    //     and only needs small refinements.
+    {
+        map<unsigned int, pair<Eigen::Vector3d, int>> mRefResiduals;
+        for(size_t k = 0; k < vValidIdx.size(); k++)
+        {
+            size_t i = vValidIdx[k];
+            MapPoint* pMP = vNEDMatches[i].pMP;
+            KeyFrame* pRefKF = pMP->GetReferenceKeyFrame();
+            if(!pRefKF || pRefKF->isBad()) continue;
+            Eigen::Vector3d residual = vNEDPts[k] - vSlamPts[k];
+            unsigned int refId = pRefKF->mnId;
+            if(mRefResiduals.count(refId))
+            {
+                mRefResiduals[refId].first += residual;
+                mRefResiduals[refId].second++;
+            }
+            else
+                mRefResiduals[refId] = {residual, 1};
+        }
+
+        map<unsigned int, KeyFrame*> mKFById;
+        for(auto* pKF : sLocalKFs)
+            if(!pKF->isBad())
+                mKFById[pKF->mnId] = pKF;
+
+        // Timeline: boundary KFs → delta=0, NED anchors → averaged residual
+        vector<pair<double, Eigen::Vector3d>> vTimeline;
+        for(auto* pKF : sBoundaryKFs)
+            if(!pKF->isBad())
+                vTimeline.push_back({pKF->mTimeStamp, Eigen::Vector3d::Zero()});
+
+        for(auto& kv : mRefResiduals)
+        {
+            auto it = mKFById.find(kv.first);
+            if(it == mKFById.end()) continue;
+            Eigen::Vector3d avgDelta = kv.second.first / (double)kv.second.second;
+            vTimeline.push_back({it->second->mTimeStamp, avgDelta});
+        }
+
+        sort(vTimeline.begin(), vTimeline.end(),
+             [](const pair<double, Eigen::Vector3d>& a,
+                const pair<double, Eigen::Vector3d>& b){ return a.first < b.first; });
+
+        if(!vTimeline.empty())
+        {
+            for(auto* pKF : sLocalKFs)
+            {
+                if(pKF->isBad() || sBoundaryKFs.count(pKF)) continue;
+                const int nIDi = pKF->mnId;
+                double t = pKF->mTimeStamp;
+
+                Eigen::Vector3d delta;
+                if(vTimeline.size() == 1 || t <= vTimeline.front().first)
+                    delta = vTimeline.front().second;
+                else if(t >= vTimeline.back().first)
+                    delta = vTimeline.back().second;
+                else
+                {
+                    auto it = lower_bound(vTimeline.begin(), vTimeline.end(),
+                                          make_pair(t, Eigen::Vector3d::Zero()),
+                                          [](const pair<double, Eigen::Vector3d>& a,
+                                             const pair<double, Eigen::Vector3d>& b)
+                                          { return a.first < b.first; });
+                    auto it_after = it;
+                    auto it_before = prev(it);
+                    double alpha = (t - it_before->first)
+                                 / (it_after->first - it_before->first);
+                    delta = (1.0 - alpha) * it_before->second
+                          + alpha * it_after->second;
+                }
+
+                g2o::Sim3 deltaTransform(Eigen::Matrix3d::Identity(), -delta, 1.0);
+                vCorrectedScw[nIDi] = vCorrectedScw[nIDi] * deltaTransform;
+            }
+
+            cout << "[NED-Inc] Smooth interpolation: " << vTimeline.size()
+                 << " anchors (" << sBoundaryKFs.size() << " boundary + "
+                 << mRefResiduals.size() << " NED)" << endl;
+        }
+    }
+
+    g2o::SparseOptimizer optimizer;
+    optimizer.setVerbose(false);
+    g2o::BlockSolver_7_3::LinearSolverType* linearSolver =
+        new g2o::LinearSolverEigen<g2o::BlockSolver_7_3::PoseMatrixType>();
+    g2o::BlockSolver_7_3* solver_ptr = new g2o::BlockSolver_7_3(linearSolver);
+    g2o::OptimizationAlgorithmLevenberg* solver =
+        new g2o::OptimizationAlgorithmLevenberg(solver_ptr);
+    solver->setUserLambdaInit(1e-16);
+    optimizer.setAlgorithm(solver);
+
+    // Create vertices
+    for(auto* pKF : sLocalKFs)
+    {
+        const int nIDi = pKF->mnId;
+        g2o::VertexSim3Expmap* VSim3 = new g2o::VertexSim3Expmap();
+        VSim3->setEstimate(vCorrectedScw[nIDi]);
+        VSim3->setId(nIDi);
+        VSim3->setMarginalized(false);
+        VSim3->_fix_scale = bFixScale;
+        VSim3->setFixed(sBoundaryKFs.count(pKF) > 0);
+        optimizer.addVertex(VSim3);
+    }
+
+    const Eigen::Matrix<double, 7, 7> matLambda = 10.0 * Eigen::Matrix<double, 7, 7>::Identity();
+    const int minFeat = 100;
+
+    // Relative edges (only between KFs in the local window)
+    for(auto* pKF : sLocalKFs)
+    {
+        const int nIDi = pKF->mnId;
+        g2o::Sim3 Swi = vNonCorrectedScw[nIDi].inverse();
+
+        // Spanning tree
+        KeyFrame* pParentKF = pKF->GetParent();
+        if(pParentKF && !pParentKF->isBad() && optimizer.vertex(pParentKF->mnId))
+        {
+            int nIDj = pParentKF->mnId;
+            g2o::Sim3 Sjw = vNonCorrectedScw[nIDj];
+            g2o::Sim3 Sji = Sjw * Swi;
+            g2o::EdgeSim3* e = new g2o::EdgeSim3();
+            e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
+            e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDj)));
+            e->setMeasurement(Sji);
+            e->information() = matLambda;
+            optimizer.addEdge(e);
+        }
+
+        // Loop edges
+        const set<KeyFrame*> sLoopEdges = pKF->GetLoopEdges();
+        for(auto* pLKF : sLoopEdges)
+        {
+            if(pLKF->mnId < pKF->mnId && !pLKF->isBad() && optimizer.vertex(pLKF->mnId))
+            {
+                g2o::Sim3 Slw = vNonCorrectedScw[pLKF->mnId];
+                g2o::Sim3 Sli = Slw * Swi;
+                g2o::EdgeSim3* el = new g2o::EdgeSim3();
+                el->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
+                el->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pLKF->mnId)));
+                el->setMeasurement(Sli);
+                el->information() = matLambda;
+                optimizer.addEdge(el);
+            }
+        }
+
+        // Covisibility
+        vector<KeyFrame*> vpConnected = pKF->GetCovisiblesByWeight(minFeat);
+        for(auto* pKFn : vpConnected)
+        {
+            if(pKFn && pKFn != pParentKF && !pKF->hasChild(pKFn)
+               && !pKFn->isBad() && pKFn->mnId < pKF->mnId
+               && optimizer.vertex(pKFn->mnId))
+            {
+                g2o::Sim3 Snw = vNonCorrectedScw[pKFn->mnId];
+                g2o::Sim3 Sni = Snw * Swi;
+                g2o::EdgeSim3* en = new g2o::EdgeSim3();
+                en->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
+                en->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFn->mnId)));
+                en->setMeasurement(Sni);
+                en->information() = matLambda;
+                optimizer.addEdge(en);
+            }
+        }
+
+        // Inertial
+        if(pKF->bImu && pKF->mPrevKF && !pKF->mPrevKF->isBad()
+           && optimizer.vertex(pKF->mPrevKF->mnId))
+        {
+            g2o::Sim3 Spw = vNonCorrectedScw[pKF->mPrevKF->mnId];
+            g2o::Sim3 Spi = Spw * Swi;
+            g2o::EdgeSim3* ep = new g2o::EdgeSim3();
+            ep->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
+            ep->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKF->mPrevKF->mnId)));
+            ep->setMeasurement(Spi);
+            ep->information() = matLambda;
+            optimizer.addEdge(ep);
+        }
+    }
+
+    // NED unary edges
+    Eigen::Matrix3d matNEDInfo = nedWeight * Eigen::Matrix3d::Identity();
+    int nNEDEdges = 0;
+
+    for(size_t k = 0; k < vValidIdx.size(); k++)
+    {
+        size_t i = vValidIdx[k];
+        MapPoint* pMP = vNEDMatches[i].pMP;
+        KeyFrame* pRefKF = pMP->GetReferenceKeyFrame();
+        const int nRefID = pRefKF->mnId;
+        if(!optimizer.vertex(nRefID)) continue;
+
+        Eigen::Vector3d Pw = vSlamPts[k];
+        Eigen::Vector3d Pc = vNonCorrectedScw[nRefID].map(Pw);
+
+        g2o::EdgeNEDPointConstraint* eNED = new g2o::EdgeNEDPointConstraint();
+        eNED->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nRefID)));
+        eNED->setMeasurement(vNEDPts[k]);
+        eNED->_pointInCamera = Pc;
+        eNED->information() = matNEDInfo;
+        optimizer.addEdge(eNED);
+        nNEDEdges++;
+    }
+
+    cout << "[NED-Inc] Graph: " << nNEDEdges << " NED edges, "
+         << nLocal << " KFs (" << nFixed << " fixed, "
+         << (nLocal - nFixed) << " free)" << endl;
+
+    // -----------------------------------------------------------------
+    // Step 4: Optimize
+    // -----------------------------------------------------------------
+    optimizer.initializeOptimization();
+    optimizer.computeActiveErrors();
+    double errBefore = optimizer.activeChi2();
+    optimizer.optimize(nIterations);
+    optimizer.computeActiveErrors();
+    double errAfter = optimizer.activeChi2();
+
+    cout << "[NED-Inc] chi2: " << errBefore << " -> " << errAfter << endl;
+
+    // -----------------------------------------------------------------
+    // Step 5: Recover — update local KFs and their MapPoints
+    // -----------------------------------------------------------------
+    unique_lock<mutex> lock(pMap->mMutexMapUpdate);
+
+    for(auto* pKFi : sLocalKFs)
+    {
+        if(sBoundaryKFs.count(pKFi)) continue;
+        const int nIDi = pKFi->mnId;
+
+        g2o::VertexSim3Expmap* VSim3 =
+            static_cast<g2o::VertexSim3Expmap*>(optimizer.vertex(nIDi));
+        if(!VSim3) continue;
+
+        g2o::Sim3 CorrectedSiw = VSim3->estimate();
+        vCorrectedSwc[nIDi] = CorrectedSiw.inverse();
+        double s = CorrectedSiw.scale();
+
+        Sophus::SE3f Tiw(CorrectedSiw.rotation().cast<float>(),
+                         CorrectedSiw.translation().cast<float>() / s);
+        pKFi->SetPose(Tiw);
+    }
+
+    // Correct ALL MapPoints whose reference KF is a free (non-boundary)
+    // KF in the local window.  Using GetAllMapPoints() ensures no MP is
+    // missed even if it was removed from a KF's observation list but
+    // still has a valid reference KF that was just corrected.
+    const vector<MapPoint*> vpAllMPs = pMap->GetAllMapPoints();
+    int nMPsUpdated = 0;
+
+    for(auto* pMP : vpAllMPs)
+    {
+        if(!pMP || pMP->isBad()) continue;
+        KeyFrame* pRefKF = pMP->GetReferenceKeyFrame();
+        if(!pRefKF || pRefKF->isBad()) continue;
+        const int nIDr = pRefKF->mnId;
+
+        if(sBoundaryKFs.count(pRefKF)) continue;
+        if(!optimizer.vertex(nIDr)) continue;
+
+        g2o::Sim3 Srw = vNonCorrectedScw[nIDr];
+        g2o::Sim3 correctedSwr = vCorrectedSwc[nIDr];
+
+        Eigen::Vector3d eigP3Dw = pMP->GetWorldPos().cast<double>();
+        Eigen::Vector3d eigCorrectedP3Dw = correctedSwr.map(Srw.map(eigP3Dw));
+        pMP->SetWorldPos(eigCorrectedP3Dw.cast<float>());
+        pMP->UpdateNormalAndDepth();
+        nMPsUpdated++;
+    }
+
+    pMap->IncreaseChangeIndex();
+    pMap->InformNewBigChange();
+    pMap->SetNEDCorrected(true, pMap->GetMaxKFid());
+
+    cout << "[NED-Inc] Incremental correction completed ("
+         << nMPsUpdated << " MPs updated)" << endl;
 }
 
 int Optimizer::OptimizeSim3(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint *> &vpMatches1, g2o::Sim3 &g2oS12, const float th2,

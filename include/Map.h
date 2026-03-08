@@ -124,6 +124,10 @@ public:
     bool GetIniertialBA1();
     bool GetIniertialBA2();
 
+    bool IsNEDCorrected();
+    void SetNEDCorrected(bool bCorrected, long unsigned int lastKFid);
+    long unsigned int GetLastNEDCorrectedKFId();
+
     void PrintEssentialGraph();
     bool CheckEssentialGraph();
     void ChangeId(long unsigned int nId);
@@ -197,6 +201,9 @@ protected:
     bool mbIsInertial;
     bool mbIMU_BA1;
     bool mbIMU_BA2;
+
+    bool mbNEDCorrected = false;
+    long unsigned int mnLastNEDCorrectedKFId = 0;
 
     // Mutex
     std::mutex mMutexMap;

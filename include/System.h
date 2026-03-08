@@ -191,8 +191,18 @@ public:
     // The NED positions are assumed correct; the optimizer adjusts all
     // KeyFrame poses and MapPoint positions to best fit these constraints
     // while maintaining local map consistency.
-    // nedWeight: relative weight of NED constraints vs local consistency (default 100).
-    void CorrectMapWithNED(const std::vector<NEDMatch>& vNEDMatches, const double nedWeight = 1e4);
+    // nedWeight: relative weight of NED constraints vs local consistency.
+    // Smoothness guideline: nedWeight/10 = ratio vs relative edges.
+    // Smooth: 1-10, Moderate: 10-50, Aggressive: 50-100.
+    void CorrectMapWithNED(const std::vector<NEDMatch>& vNEDMatches, const double nedWeight = 10.0);
+
+    // Compute SLAM→NED scale without modifying the map.
+    // Use to convert SLAM velocity to NED: v_ned = scale * v_slam.
+    // One frame: pass matched points from a single frame.
+    double GetSlamToNEDScale(const std::vector<NEDMatch>& vMatches);
+    // Two frames: more robust (spatial baseline between frames).
+    double GetSlamToNEDScale(const std::vector<NEDMatch>& vMatches1,
+                             const std::vector<NEDMatch>& vMatches2);
 
 #ifdef REGISTER_TIMES
     void InsertRectTime(double& time);

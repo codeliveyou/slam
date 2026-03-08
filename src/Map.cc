@@ -318,6 +318,25 @@ bool Map::GetIniertialBA2()
     return mbIMU_BA2;
 }
 
+bool Map::IsNEDCorrected()
+{
+    unique_lock<mutex> lock(mMutexMap);
+    return mbNEDCorrected;
+}
+
+void Map::SetNEDCorrected(bool bCorrected, long unsigned int lastKFid)
+{
+    unique_lock<mutex> lock(mMutexMap);
+    mbNEDCorrected = bCorrected;
+    mnLastNEDCorrectedKFId = lastKFid;
+}
+
+long unsigned int Map::GetLastNEDCorrectedKFId()
+{
+    unique_lock<mutex> lock(mMutexMap);
+    return mnLastNEDCorrectedKFId;
+}
+
 void Map::ChangeId(long unsigned int nId)
 {
     mnId = nId;
